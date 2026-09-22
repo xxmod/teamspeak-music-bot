@@ -356,18 +356,61 @@ export class BotProfileManager {
   }
 
   /**
-   * Build a nickname string that fits within TS3_NICKNAME_MAX.
-   * Uses UTF-8 byte length for the limit since TS3 counts bytes,
-   * not characters.
+   * 构建播放时的机器人昵称。
+   * 规则：
+   * 1. 包含前缀 "♪ "。
+   * 2. 按照整串（歌名 - 作者名）做长度限制，但中间的连接符 " - " 不计入字数。
+   * 3. 限制为 12 个中文字符宽度（1 个汉字计 1 字符宽度/2 权重，2 个英文字符计 1 字符宽度/1 权重，上限为 24 权重）。
+   * 4. 超过限制时截断并在末尾追加 "..."。
    */
   private buildNickname(song: QueuedSong): string | null {
-    const songInfo = `${song.name} - ${song.artist}`;
     const prefix = "\u266A "; // ♪
+    const maxWeight = 24; // 12 个中文字符，每个汉字/全角符号权重 2，半角/英文权重 1
 
-    const overheadBytes = Buffer.byteLength(prefix, "utf8");
-    const maxSongBytes = TS3_NICKNAME_MAX - overheadBytes;
-    const truncated = this.truncateUtf8(songInfo, maxSongBytes);
-    return `${prefix}${truncated}`;
+    const getCharWeight = (ch: string): number => {
+      const code = ch.codePointAt(0) ?? 0;
+      return code <= 0x7f ? 1 : 2;
+    };
+
+    const sliceByWeight = (str: string, limit: number) => {
+      let currentWeight = 0;
+      let end = 0;
+      for (const ch of str) {
+        const w = getCharWeight(ch);
+        if (currentWeight + w > limit) {
+          return { text: str.slice(0, end), weight: currentWeight, truncated: true };
+        }
+        currentWeight += w;
+        end += ch.length;
+      }
+      return { text: str, weight: currentWeight, truncated: false };
+    };
+
+    const name = song.name || "";
+    const artist = song.artist || "";
+
+    // 1. 检查歌名部分
+    const nameRes = sliceByWeight(name, maxWeight);
+    if (nameRes.truncated) {
+      return `${prefix}${nameRes.text}...`;
+    }
+
+    // 若无作者名，则完整输出歌名
+    if (!artist) {
+      return `${prefix}${nameRes.text}`;
+    }
+
+    // 2. 中间 " - " 不记数，计算作者名可用的剩余权重
+    const remainingWeight = maxWeight - nameRes.weight;
+    const artistRes = sliceByWeight(artist, remainingWeight);
+    if (artistRes.truncated) {
+      if (artistRes.text.length > 0) {
+        return `${prefix}${name} - ${artistRes.text}...`;
+      }
+      return `${prefix}${name}...`;
+    }
+
+    return `${prefix}${name} - ${artist}`;
   }
 
   /**
