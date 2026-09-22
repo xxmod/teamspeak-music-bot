@@ -202,3 +202,54 @@ describe("BotProfileManager loadCustomAvatar (pre-connect load, #148)", () => {
     expect(ts.uploadCalls[0].equals(Buffer.from([2, 2]))).toBe(true);
   });
 });
+
+describe("BotProfileManager nickname format without bot suffix", () => {
+  let ts: ReturnType<typeof makeMockTs>;
+  beforeEach(() => { ts = makeMockTs(); });
+
+  it("builds nickname as '♪ 音乐名 - 作者名' without bot suffix", () => {
+    const pm = new BotProfileManager(ts as any, noopLogger, cfgOff, "MyMusicBot");
+    const nickname = (pm as any).buildNickname({
+      ...fakeSong,
+      name: "晴天",
+      artist: "周杰伦",
+    });
+    expect(nickname).toBe("\u266A 晴天 - 周杰伦");
+    expect(nickname).not.toContain("MyMusicBot");
+    expect(Buffer.byteLength(nickname, "utf8")).toBeLessThanOrEqual(30);
+  });
+
+  it("truncates long song names so total UTF-8 bytes <= 30", () => {
+    const pm = new BotProfileManager(ts as any, noopLogger, cfgOff, "MyMusicBot");
+    const nickname = (pm as any).buildNickname({
+      ...fakeSong,
+      name: "这是一首非常非常非常非常非常长的歌名",
+      artist: "周杰伦与方文山特别合作超级长名字",
+    });
+    expect(nickname.startsWith("\u266A ")).toBe(true);
+    expect(nickname.endsWith("\u2026")).toBe(true);
+    expect(nickname).not.toContain("MyMusicBot");
+    expect(Buffer.byteLength(nickname, "utf8")).toBeLessThanOrEqual(30);
+  });
+
+  it("sends clientupdate with new nickname format on song change", async () => {
+    const commands: string[] = [];
+    (ts.sendCommandNoWait as any).mockImplementation(async (cmd: string) => {
+      commands.push(cmd);
+    });
+    const cfgNickname = { ...cfgOff, nicknameEnabled: true };
+    const pm = new BotProfileManager(ts as any, noopLogger, cfgNickname, "MyMusicBot");
+
+    await pm.onSongChange({
+      ...fakeSong,
+      name: "晴天",
+      artist: "周杰伦",
+    });
+
+    const updateCmd = commands.find((c) => c.startsWith("clientupdate"));
+    expect(updateCmd).toBeDefined();
+    expect(updateCmd).toContain("client_nickname=");
+    expect(updateCmd).not.toContain("MyMusicBot");
+  });
+});
+
