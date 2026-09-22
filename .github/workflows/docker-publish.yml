@@ -13,7 +13,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: zhangtianyao1/teamspeak-music-bot
+  IMAGE_NAME: xxmod/teamspeak-music-bot
 
 jobs:
   build-and-push:
