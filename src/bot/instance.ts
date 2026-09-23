@@ -1074,7 +1074,7 @@ export class BotInstance extends EventEmitter {
           coverUrl: song.coverUrl,
           requestedBy: song.requestedBy,
         });
-        await this.syncProfileToSong(song);
+        void this.syncProfileToSong(song);
         this.emit("stateChange");
         return true;
       }
@@ -1123,7 +1123,9 @@ export class BotInstance extends EventEmitter {
         requestedBy: song.requestedBy,
       });
       // Keep TeamSpeak-side profile updates on the same path for play/next/FM.
-      await this.syncProfileToSong(song);
+      // Fire-and-forget: do not block playback resolution or hold isAdvancing lock
+      // while downloading cover art and uploading avatars to TS3.
+      void this.syncProfileToSong(song);
       this.emit("stateChange");
       return true;
     } catch (err) {

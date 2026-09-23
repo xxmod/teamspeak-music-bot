@@ -680,4 +680,49 @@ describe("AudioPlayer stall/EOF end-detection is gated on playing state (R3-4)",
       vi.useRealTimers();
     }
   });
+
+  it("suppresses 'frame' emissions when volume <= 0 so TS3 blue light extinguishes, while advancing framesPlayed", () => {
+    vi.useFakeTimers(FAKE_TIMER_OPTS);
+    try {
+      const player = new AudioPlayer(silentLogger);
+      player.setVolume(0);
+
+      const p = player as unknown as {
+        ffmpeg: unknown;
+        currentSongDuration: number;
+        pcmBuffer: Buffer;
+        emptyFrameAttempts: number;
+        framesPlayed: number;
+        state: string;
+        startFrameLoop(): void;
+      };
+      p.ffmpeg = { pid: undefined };
+      p.currentSongDuration = 100;
+      p.pcmBuffer = Buffer.alloc(FRAME_BYTES * 50);
+      p.emptyFrameAttempts = 0;
+      p.framesPlayed = 0;
+      p.state = "playing";
+      p.startFrameLoop();
+
+      const frames: Buffer[] = [];
+      player.on("frame", (f) => frames.push(f));
+
+      // Advance 10 frames (200ms) with volume=0
+      vi.advanceTimersByTime(20 * 10);
+
+      expect(frames.length).toBe(0); // Zero frames emitted (TS3 mic turns off)
+      expect(p.framesPlayed).toBeGreaterThanOrEqual(10); // But playback timeline advances
+      expect(p.pcmBuffer.length).toBe(FRAME_BYTES * 40); // Buffer is consumed
+
+      // Now restore volume to 50%
+      player.setVolume(50);
+      vi.advanceTimersByTime(20 * 5);
+
+      expect(frames.length).toBeGreaterThan(0); // Frames resumed
+      player.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
+

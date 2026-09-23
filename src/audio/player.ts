@@ -729,6 +729,19 @@ export class AudioPlayer extends EventEmitter {
       }
     }
 
+    // 静音优化：当音量为 0 时跳过 Opus 编码与 frame 发送，
+    // 使 TeamSpeak 服务器停止接收语音包从而熄灭麦克风小蓝灯；
+    // 同时依然递增 framesPlayed 确保播放进度正常推进。
+    if (this.volume <= 0) {
+      this.framesPlayed++;
+      this.healthyFrames++;
+      if (this.healthyFrames >= AudioPlayer.HEALTHY_FRAME_RESET) {
+        this.consecutiveFailures = 0;
+        this.healthyFrames = 0;
+      }
+      return;
+    }
+
     try {
       const adjusted = this.applyVolume(pcmFrame);
       const opusFrame = this.encoder.encode(adjusted);
@@ -745,6 +758,7 @@ export class AudioPlayer extends EventEmitter {
   }
 
   private emitSilenceFrame(): void {
+    if (this.volume <= 0) return;
     try {
       const opusFrame = this.encoder.encode(Buffer.alloc(PCM_FRAME_BYTES));
       this.emit("frame", opusFrame);
