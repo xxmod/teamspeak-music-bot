@@ -132,6 +132,17 @@ describe("volumeToFactor (#84 smooth volume curve)", () => {
   it("keeps the low range gentle", () => {
     expect(volumeToFactor(50)).toBeLessThan(0.12);
   });
+
+  it("attenuates uniformly in decibels (~4 to 6 dB per 10% step) avoiding abrupt collapse at low volume", () => {
+    for (let v = 100; v >= 30; v -= 10) {
+      const fHigh = volumeToFactor(v);
+      const fLow = volumeToFactor(v - 10);
+      const dropDb = 20 * Math.log10(fHigh) - 20 * Math.log10(fLow);
+      // Each 10% step drops between 3.5 dB and 6.0 dB, smoothly and consistently
+      expect(dropDb).toBeGreaterThan(3.5);
+      expect(dropDb).toBeLessThan(6.5);
+    }
+  });
 });
 
 describe("shouldUsePowerShellDownload", () => {

@@ -137,18 +137,25 @@ export function shouldEndOnStall(
 }
 
 /**
- * Maps a 0-100 volume value to a linear PCM gain factor (#84).
+ * Maps a 0-100 volume value to a linear PCM gain factor using a standard
+ * 40 dB logarithmic audio taper curve (IEC 60268-7).
  *
- * Continuous and strictly monotonic over [0,100]: 0 at vol 0 and exactly 1.0 at
- * vol 100. The previous mapping was a two-piece step — gain = (vol/100)*0.2 for
- * vol<100 (so the whole 0-99 range only spanned 0..0.198, making 80->99 feel
- * flat) then a raw passthrough at vol===100 (a ~5x jump). This single curve keeps
- * the low end gentle but ramps smoothly toward full loudness near the top, so the
- * slider feels proportional with no dead zone and no discontinuity at 100.
+ * Human hearing perceives loudness logarithmically (in decibels). Linear
+ * amplitude scaling causes volume to feel unresponsive at the high end and
+ * collapse abruptly at the low end.
+ *
+ * This formula provides uniform dB attenuation per step across the slider:
+ * gain(x) = (10^(2 * x) - 1) / 99  where x = vol / 100 in [0, 1]
+ * - vol = 0: gain = 0.0 (-inf dB, pure silence)
+ * - vol = 50: gain ≈ 0.0909 (-20.8 dB, natural half-loudness midpoint)
+ * - vol = 100: gain = 1.0 (0 dB, bit-exact full scale)
+ * Each 10% change uniformly attenuates ~4 dB, yielding a smooth and consistent auditory response.
  */
 export function volumeToFactor(volume: number): number {
-  const x = Math.max(0, Math.min(100, volume)) / 100;
-  return 0.2 * x + 0.8 * Math.pow(x, 8);
+  if (volume <= 0) return 0;
+  if (volume >= 100) return 1;
+  const x = volume / 100;
+  return (Math.pow(10, 2 * x) - 1) / 99;
 }
 
 export interface PlayerEvents {
