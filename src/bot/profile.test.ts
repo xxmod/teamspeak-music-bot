@@ -257,6 +257,32 @@ describe("BotProfileManager nickname format without bot suffix", () => {
     expect(nickname).toBe("\u266A abcdefghijklmnopqrstuvwx...");
   });
 
+  it("strictly limits nickname length to <= 30 characters for English collaboration tracks like Starboy", () => {
+    const pm = new BotProfileManager(ts as any, noopLogger, cfgOff, "MyMusicBot");
+    const nickname = (pm as any).buildNickname({
+      ...fakeSong,
+      name: "Starboy",
+      artist: "The Weeknd / Daft Punk",
+    });
+    expect(nickname).toBe("\u266A Starboy - The Weeknd / Da...");
+    expect(nickname.length).toBe(30);
+    expect(nickname.length).toBeLessThanOrEqual(30);
+  });
+
+  it("never exceeds 30 characters across various extreme combinations", () => {
+    const pm = new BotProfileManager(ts as any, noopLogger, cfgOff, "MyMusicBot");
+    const cases = [
+      { name: "Supercalifragilisticexpialidocious", artist: "Unknown" },
+      { name: "Short", artist: "Very long artist name that goes on and on and on" },
+      { name: "中英文混排 Song Name 2026", artist: "Artist With Lots Of Featured Collaborators" },
+      { name: "123456789012345678901234567890", artist: "Singer" },
+    ];
+    for (const c of cases) {
+      const nick = (pm as any).buildNickname({ ...fakeSong, ...c });
+      expect(nick.length).toBeLessThanOrEqual(30);
+    }
+  });
+
   it("sends clientupdate with new nickname format on song change", async () => {
     const commands: string[] = [];
     (ts.sendCommandNoWait as any).mockImplementation(async (cmd: string) => {
@@ -277,5 +303,6 @@ describe("BotProfileManager nickname format without bot suffix", () => {
     expect(updateCmd).not.toContain("MyMusicBot");
   });
 });
+
 
 
