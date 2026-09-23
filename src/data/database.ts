@@ -11,6 +11,7 @@ import type { QueuedSong } from "../audio/queue.js";
 export const SHARED_QUEUE_OWNER = "__shared__";
 /** Cap per owner (private user OR the shared bucket). */
 export const MAX_SAVED_QUEUES = 50;
+export const MAX_AUDIO_LOUDNESS_CACHE = 1024;
 /** Cap per saved queue / persisted live-queue snapshot. */
 export const MAX_QUEUE_SONGS = 1000;
 
@@ -355,6 +356,7 @@ function initTables(db: Database.Database): void {
       createdAt          TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (platform, songId)
     );
+    CREATE INDEX IF NOT EXISTS idx_audio_loudness_createdAt ON audio_loudness(createdAt);
   `);
 }
 
@@ -547,6 +549,11 @@ export function createDatabase(dbPath: string): BotDatabase {
     WHERE platform = ? AND songId = ?
   `);
 
+  const touchLoudness = db.prepare(`
+    UPDATE audio_loudness SET createdAt = datetime('now')
+    WHERE platform = ? AND songId = ?
+  `);
+
   const upsertLoudness = db.prepare(`
     INSERT INTO audio_loudness (platform, songId, integratedLoudness, truePeak, gainDb)
     VALUES (@platform, @songId, @integratedLoudness, @truePeak, @gainDb)
@@ -555,6 +562,15 @@ export function createDatabase(dbPath: string): BotDatabase {
       truePeak = excluded.truePeak,
       gainDb = excluded.gainDb,
       createdAt = datetime('now')
+  `);
+
+  const pruneLoudness = db.prepare(`
+    DELETE FROM audio_loudness
+    WHERE rowid NOT IN (
+      SELECT rowid FROM audio_loudness
+      ORDER BY createdAt DESC
+      LIMIT ?
+    )
   `);
 
   return {
@@ -758,6 +774,9 @@ export function createDatabase(dbPath: string): BotDatabase {
 
     getSongLoudness(platform, songId) {
       const row = selectLoudness.get(platform, songId) as CachedLoudness | undefined;
+      if (row) {
+        touchLoudness.run(platform, songId);
+      }
       return row ?? null;
     },
 
@@ -769,6 +788,7 @@ export function createDatabase(dbPath: string): BotDatabase {
         truePeak,
         gainDb,
       });
+      pruneLoudness.run(MAX_AUDIO_LOUDNESS_CACHE);
     },
 
     close() {

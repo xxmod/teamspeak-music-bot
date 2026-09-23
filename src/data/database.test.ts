@@ -372,4 +372,37 @@ describe("guest principal migration", () => {
     d.db.close();
     rmSync(dir, { recursive: true, force: true });
   });
+
+  it("caps loudness cache to MAX_AUDIO_LOUDNESS_CACHE and evicts least recently accessed", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tsmb-db-loudness-lru-"));
+    const p = join(dir, "t.db");
+    const d = createDatabase(p);
+
+    // Save initial batch and verify touchLoudness
+    d.saveSongLoudness("netease", "song-old", -20, -1, 4);
+    d.db.prepare("UPDATE audio_loudness SET createdAt = datetime('now', '-10 days') WHERE songId = 'song-old'").run();
+
+    // Getting the song should touch its createdAt
+    d.getSongLoudness("netease", "song-old");
+    const row = d.db.prepare("SELECT createdAt FROM audio_loudness WHERE songId = 'song-old'").get() as { createdAt: string };
+    expect(row.createdAt.slice(0, 10)).toBe(new Date().toISOString().slice(0, 10));
+
+    // Fill beyond 1024
+    d.db.transaction(() => {
+      for (let i = 0; i <= 1025; i++) {
+        d.saveSongLoudness("netease", `s-${i}`, -16, -1, 0);
+      }
+    })();
+
+    const countRow = d.db.prepare("SELECT count(*) as c FROM audio_loudness").get() as { c: number };
+    expect(countRow.c).toBe(1024);
+    // Oldest entries (s-0, s-1) pruned
+    expect(d.getSongLoudness("netease", "s-0")).toBeNull();
+    expect(d.getSongLoudness("netease", "s-1")).toBeNull();
+    // Newest entries retained
+    expect(d.getSongLoudness("netease", "s-1025")).not.toBeNull();
+
+    d.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
 });
