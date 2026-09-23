@@ -60,6 +60,12 @@ export interface VoiceDuckingConfig {
   volumePercent: number;
 }
 
+export interface AudioNormalizationConfig {
+  enabled: boolean;
+  /** Target loudness in LUFS (EBU R128 standard, default -16). */
+  targetLufs: number;
+}
+
 /**
  * Providers gated by `enabledProviders`. Not listed here:
  *  - "local"   → governed by the existing `localAudioEnabled` flag
@@ -166,6 +172,10 @@ export interface BotConfig {
    * back to null.
    */
   defaultPlatform: GateableProvider | null;
+  /**
+   * Loudness normalization (EBU R128 / loudnorm) pre-analysis and gain leveling.
+   */
+  audioNormalization: AudioNormalizationConfig;
 }
 
 export function getDefaultConfig(): BotConfig {
@@ -235,6 +245,10 @@ export function getDefaultConfig(): BotConfig {
     },
     enabledProviders: ["netease", "qq", "bilibili", "youtube", "kugou"],
     defaultPlatform: null,
+    audioNormalization: {
+      enabled: true,
+      targetLufs: -16,
+    },
   };
 }
 
@@ -446,6 +460,29 @@ export function loadConfig(path: string): BotConfig {
       jellyfin: coerceQuality(partialAq.jellyfin, defaults.audioQuality.jellyfin),
     };
 
+    // audioNormalization → validate boolean enabled + finite in-range targetLufs (-30 to -6)
+    const rawAn = partial.audioNormalization;
+    const partialAn =
+      rawAn !== null &&
+      typeof rawAn === "object" &&
+      !Array.isArray(rawAn)
+        ? (rawAn as Partial<AudioNormalizationConfig>)
+        : {};
+    const rawTargetLufs = partialAn.targetLufs;
+    const audioNormalization: AudioNormalizationConfig = {
+      enabled:
+        typeof partialAn.enabled === "boolean"
+          ? partialAn.enabled
+          : defaults.audioNormalization.enabled,
+      targetLufs:
+        typeof rawTargetLufs === "number" &&
+        Number.isFinite(rawTargetLufs) &&
+        rawTargetLufs >= -30 &&
+        rawTargetLufs <= -6
+          ? rawTargetLufs
+          : defaults.audioNormalization.targetLufs,
+    };
+
     return {
       ...defaults,
       ...partial,
@@ -459,6 +496,7 @@ export function loadConfig(path: string): BotConfig {
       playKeepsQueue,
       voiceDucking,
       defaultPlatform: defaultPlatformPref,
+      audioNormalization,
     };
   }
 }

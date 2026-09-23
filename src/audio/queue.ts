@@ -243,6 +243,42 @@ export class PlayQueue {
     }
   }
 
+  /**
+   * Peek at the next song that will be played, without mutating queue state.
+   * Useful for background pre-analysis and pre-fetching.
+   */
+  peekNext(): QueuedSong | null {
+    if (this.songs.length === 0) return null;
+
+    switch (this.mode) {
+      case PlayMode.Sequential: {
+        const nextIndex = this.currentIndex + 1;
+        if (nextIndex >= this.songs.length) return null;
+        return this.songs[nextIndex];
+      }
+      case PlayMode.Loop: {
+        const nextIndex = (this.currentIndex + 1) % this.songs.length;
+        return this.songs[nextIndex];
+      }
+      case PlayMode.Random:
+      case PlayMode.RandomLoop: {
+        for (let i = this.forwardStack.length - 1; i >= 0; i--) {
+          const target = this.forwardStack[i];
+          if (target >= 0 && target < this.songs.length && target !== this.currentIndex) {
+            return this.songs[target];
+          }
+        }
+        for (let i = 0; i < this.songs.length; i++) {
+          if (!this.playedIndices.has(i)) return this.songs[i];
+        }
+        if (this.mode === PlayMode.Random) return null;
+        if (this.songs.length === 1) return this.songs[0];
+        const nextIdx = (this.currentIndex + 1) % this.songs.length;
+        return this.songs[nextIdx];
+      }
+    }
+  }
+
   prev(): QueuedSong | null {
     if (this.songs.length === 0) return null;
 

@@ -344,4 +344,32 @@ describe("guest principal migration", () => {
     d.db.close();
     rmSync(dir, { recursive: true, force: true });
   });
+
+  it("caches and retrieves song loudness metrics", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tsmb-db-loudness-"));
+    const p = join(dir, "t.db");
+    const d = createDatabase(p);
+
+    // Initial check: not cached
+    expect(d.getSongLoudness("netease", "123456")).toBeNull();
+
+    // Save analysis
+    d.saveSongLoudness("netease", "123456", -21.5, -4.2, 5.5);
+
+    const cached = d.getSongLoudness("netease", "123456");
+    expect(cached).not.toBeNull();
+    expect(cached!.platform).toBe("netease");
+    expect(cached!.songId).toBe("123456");
+    expect(cached!.integratedLoudness).toBe(-21.5);
+    expect(cached!.truePeak).toBe(-4.2);
+    expect(cached!.gainDb).toBe(5.5);
+
+    // Update / overwrite same song
+    d.saveSongLoudness("netease", "123456", -19.0, -2.0, 3.0);
+    const updated = d.getSongLoudness("netease", "123456");
+    expect(updated!.gainDb).toBe(3.0);
+
+    d.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
 });

@@ -462,11 +462,18 @@ function makeResolveCtx(opts: {
     effectiveDuration: undefined,
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     tsClient: { sendTextMessage: vi.fn(async () => {}) },
-    database: { addPlayHistory: vi.fn() },
+    database: {
+      addPlayHistory: vi.fn(),
+      getSongLoudness: vi.fn(() => null),
+      saveSongLoudness: vi.fn(),
+    },
+    queue: { peekNext: vi.fn(() => null) },
     spotifyController: opts.controller,
     player: opts.player,
     getProviderFor: vi.fn(() => ({ getSongUrl: async () => ({ url: opts.url }) })),
     syncProfileToSong: vi.fn(async () => {}),
+    resolveSongGain: (BotInstance.prototype as any).resolveSongGain,
+    preAnalyzeNextTrack: vi.fn(),
     emit: vi.fn(),
   } as any;
 }
@@ -633,6 +640,27 @@ describe("BotInstance.resolveAndPlay — Spotify routing (C4)", () => {
     expect(ctx.currentSourceIsSpotify).toBe(false);
     expect(player.play).toHaveBeenCalledWith("http://cdn/x.mp3", 0, 200);
     expect(player.playPcmStream).not.toHaveBeenCalled();
+  });
+
+  it("applies cached audio normalization gainDb when audioNormalization is enabled", async () => {
+    const controller = makeController();
+    const player = makePlayer();
+    const song = { id: "track1", platform: "netease", duration: 180, name: "Test" } as any;
+    const ctx = makeResolveCtx({
+      controller, player, url: "http://cdn/track1.mp3",
+    });
+    ctx.config = { audioNormalization: { enabled: true, targetLufs: -16 } };
+    ctx.database.getSongLoudness = vi.fn(() => ({
+      platform: "netease",
+      songId: "track1",
+      integratedLoudness: -20,
+      truePeak: -3,
+      gainDb: 4.0,
+    }));
+
+    const ok = await resolveAndPlay.call(ctx, song);
+    expect(ok).toBe(true);
+    expect(player.play).toHaveBeenCalledWith("http://cdn/track1.mp3", 0, 180, 4.0);
   });
 
   // R3-3: spotify A playing → pause → skip to spotify B. The persistent PCM

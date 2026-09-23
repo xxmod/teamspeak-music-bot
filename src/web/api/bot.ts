@@ -75,6 +75,7 @@ export function createBotRouter(
       localAudioEnabled: config.localAudioEnabled,
       savedQueuesEnabled: config.savedQueuesEnabled,
       playKeepsQueue: config.playKeepsQueue,
+      audioNormalization: config.audioNormalization,
       adminGroups: config.adminGroups ?? [],
       guestMode: config.guestMode,
       spotify: maskedSpotify(),
@@ -138,6 +139,24 @@ export function createBotRouter(
     }
     if (typeof req.body.playKeepsQueue === "boolean") {
       config.playKeepsQueue = req.body.playKeepsQueue;
+    }
+
+    const hasAudioNorm =
+      req.body.audioNormalization !== null &&
+      typeof req.body.audioNormalization === "object" &&
+      !Array.isArray(req.body.audioNormalization);
+    if (hasAudioNorm) {
+      if (typeof req.body.audioNormalization.enabled === "boolean") {
+        config.audioNormalization.enabled = req.body.audioNormalization.enabled;
+      }
+      if (
+        typeof req.body.audioNormalization.targetLufs === "number" &&
+        Number.isFinite(req.body.audioNormalization.targetLufs) &&
+        req.body.audioNormalization.targetLufs >= -30 &&
+        req.body.audioNormalization.targetLufs <= -6
+      ) {
+        config.audioNormalization.targetLufs = req.body.audioNormalization.targetLufs;
+      }
     }
 
     const hasGuestMode = guestMode !== undefined && guestMode !== null && typeof guestMode === "object";
@@ -283,6 +302,7 @@ export function createBotRouter(
       localAudioEnabled: config.localAudioEnabled,
       savedQueuesEnabled: config.savedQueuesEnabled,
       playKeepsQueue: config.playKeepsQueue,
+      audioNormalization: config.audioNormalization,
       adminGroups: config.adminGroups ?? [],
       guestMode: config.guestMode,
       spotify: maskedSpotify(),

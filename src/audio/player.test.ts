@@ -89,6 +89,18 @@ describe("buildFfmpegArgs", () => {
     expect(args).toContain("s16le");
     expect(args[args.length - 1]).toBe("-");
   });
+
+  it("applies -af volume=<gain>dB when gainDb is provided and non-zero", () => {
+    const args = buildFfmpegArgs("https://example.com/song.mp3", 0, 4.5);
+    const afIdx = args.indexOf("-af");
+    expect(afIdx).toBeGreaterThan(-1);
+    expect(args[afIdx + 1]).toBe("volume=4.50dB");
+  });
+
+  it("omits -af volume when gainDb is 0", () => {
+    const args = buildFfmpegArgs("https://example.com/song.mp3", 0, 0);
+    expect(args).not.toContain("-af");
+  });
 });
 
 describe("volumeToFactor (#84 smooth volume curve)", () => {

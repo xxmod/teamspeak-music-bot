@@ -260,6 +260,31 @@ describe("bot router /settings", () => {
     expect(config.adminGroups).toEqual([6]);
   });
 
+  it("GET and POST /settings handles audioNormalization configuration", async () => {
+    const getRes = await request(app).get("/api/bot/settings").set("Cookie", cookie);
+    expect(getRes.status).toBe(200);
+    expect(getRes.body.audioNormalization).toEqual(config.audioNormalization);
+
+    const postRes = await request(app)
+      .post("/api/bot/settings")
+      .set("Cookie", cookie)
+      .send({
+        audioNormalization: {
+          enabled: false,
+          targetLufs: -14,
+        },
+      });
+    expect(postRes.status).toBe(200);
+    expect(postRes.body.audioNormalization).toEqual({
+      enabled: false,
+      targetLufs: -14,
+    });
+    expect(config.audioNormalization).toEqual({
+      enabled: false,
+      targetLufs: -14,
+    });
+  });
+
   it("GET /settings includes a masked spotify block (hasClientSecret, never a raw secret)", async () => {
     config.spotify.enabled = true;
     config.spotify.backend = "librespot";

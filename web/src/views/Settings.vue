@@ -842,6 +842,60 @@
         </p>
       </div>
 
+      <!-- 音频波形响度与音量自动均衡 -->
+      <label class="profile-toggle behavior-toggle">
+        <div class="profile-toggle-text">
+          <div class="profile-toggle-label">音频音量均衡 (响度平衡)</div>
+          <div class="profile-toggle-hint">提前分析音频波形与综合响度（EBU R128 标准），自动平衡不同歌曲之间的音量大小，防止切歌时忽大忽小。支持自动后台预分析与本地缓存。</div>
+        </div>
+        <input
+          v-model="audioNormalizationEnabled"
+          type="checkbox"
+          class="profile-toggle-switch"
+          :disabled="audioNormalizationSaving"
+          @change="saveAudioNormalization"
+        />
+      </label>
+
+      <div v-if="audioNormalizationEnabled" class="setting-row voice-ducking-volume">
+        <div class="setting-label">
+          <Icon icon="mdi:equalizer" class="setting-icon" />
+          <div>
+            <div>目标响度标准</div>
+            <div class="voice-ducking-hint">标准流媒体目标响度，默认 -16 LUFS。支持 -24 ~ -12 LUFS。</div>
+          </div>
+        </div>
+        <div class="voice-ducking-controls">
+          <input
+            v-model.number="audioNormalizationTargetLufs"
+            type="range"
+            min="-24"
+            max="-12"
+            step="1"
+            class="voice-ducking-range"
+            :disabled="audioNormalizationSaving"
+            aria-label="目标响度"
+          />
+          <div class="prefix-input-wrap">
+            <input
+              v-model.number="audioNormalizationTargetLufs"
+              type="number"
+              min="-24"
+              max="-12"
+              step="1"
+              class="input input-sm"
+              style="max-width:80px"
+              :disabled="audioNormalizationSaving"
+              aria-label="目标响度数值"
+            />
+            <span class="voice-ducking-unit">LUFS</span>
+            <button class="btn-primary" :disabled="audioNormalizationSaving" @click="saveAudioNormalization">
+              {{ audioNormalizationSaving ? '保存中…' : '保存设置' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <label class="profile-toggle behavior-toggle">
         <div class="profile-toggle-text">
           <div class="profile-toggle-label">本地音频播放</div>
@@ -1675,6 +1729,10 @@ const localAudioEnabled = ref(true);
 // Saved-queues + play-keeps-queue toggles (#119), both default OFF.
 const savedQueuesEnabled = ref(false);
 const playKeepsQueue = ref(false);
+// Audio Normalization (EBU R128)
+const audioNormalizationEnabled = ref(true);
+const audioNormalizationTargetLufs = ref(-16);
+const audioNormalizationSaving = ref(false);
 
 function normalizeVoiceDuckingVolume(): number {
   const raw = voiceDuckingVolumePercent.value as number | string;
@@ -1715,6 +1773,10 @@ async function loadIdleTimeout() {
     localAudioEnabled.value = res.data.localAudioEnabled ?? true;
     savedQueuesEnabled.value = res.data.savedQueuesEnabled ?? false;
     playKeepsQueue.value = res.data.playKeepsQueue ?? false;
+    if (res.data.audioNormalization) {
+      audioNormalizationEnabled.value = res.data.audioNormalization.enabled ?? true;
+      audioNormalizationTargetLufs.value = res.data.audioNormalization.targetLufs ?? -16;
+    }
     store.savedQueuesEnabled = savedQueuesEnabled.value;
     applyGuestModeFromServer(res.data.guestMode);
     applyAdminGroupsFromServer(res.data.adminGroups);
@@ -1745,6 +1807,32 @@ async function saveAutoPause() {
   try {
     await axios.post('/api/bot/settings', { autoPauseOnEmpty: autoPauseOnEmpty.value });
   } catch { /* ignore */ }
+}
+
+async function saveAudioNormalization() {
+  if (audioNormalizationSaving.value) return;
+  audioNormalizationSaving.value = true;
+  try {
+    let target = Number(audioNormalizationTargetLufs.value);
+    if (!Number.isFinite(target) || target < -30 || target > -6) {
+      target = -16;
+    }
+    audioNormalizationTargetLufs.value = target;
+    const res = await axios.post('/api/bot/settings', {
+      audioNormalization: {
+        enabled: audioNormalizationEnabled.value,
+        targetLufs: target,
+      },
+    });
+    if (res.data?.audioNormalization) {
+      audioNormalizationEnabled.value = res.data.audioNormalization.enabled ?? audioNormalizationEnabled.value;
+      audioNormalizationTargetLufs.value = res.data.audioNormalization.targetLufs ?? audioNormalizationTargetLufs.value;
+    }
+  } catch {
+    /* ignore */
+  } finally {
+    audioNormalizationSaving.value = false;
+  }
 }
 
 async function saveVoiceDucking() {

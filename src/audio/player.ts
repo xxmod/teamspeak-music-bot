@@ -73,7 +73,7 @@ export function cleanupTempDir(dir: string): void {
   }
 }
 
-export function buildFfmpegArgs(url: string, seekSeconds: number): string[] {
+export function buildFfmpegArgs(url: string, seekSeconds: number, gainDb = 0): string[] {
   const args: string[] = [];
   const isHttp = /^https?:\/\//i.test(url);
 
@@ -106,6 +106,9 @@ export function buildFfmpegArgs(url: string, seekSeconds: number): string[] {
   args.push("-i", url);
   // Output-side seek (after -i): works on CDNs that reject Range/keyframe seeks (NetEase music.126.net).
   if (seekSeconds > 0) args.push("-ss", String(seekSeconds));
+  if (Number.isFinite(gainDb) && Math.abs(gainDb) >= 0.05) {
+    args.push("-af", `volume=${gainDb.toFixed(2)}dB`);
+  }
   args.push("-f", "s16le", "-ar", "48000", "-ac", "2", "-acodec", "pcm_s16le", "-");
 
   return args;
@@ -198,6 +201,7 @@ export class AudioPlayer extends EventEmitter {
   // transient underrun never trips it.
   private static readonly MAX_STALL_ATTEMPTS = 3000;
   private currentSongDuration = 0; // 当前歌曲总时长（秒）
+  private currentGainDb = 0; // 音量均衡增益（分贝）
 
   // --- External PCM mode (Stage 2: go-librespot Spotify sidecar) ---
   // When true, PCM arrives from a long-lived external Readable instead of a
@@ -221,7 +225,7 @@ export class AudioPlayer extends EventEmitter {
     this.logger = logger;
   }
 
-  play(url: string, seekSeconds = 0, songDuration = 0): void {
+  play(url: string, seekSeconds = 0, songDuration = 0, gainDb = 0): void {
     // 1. 停止当前所有播放，自增 sessionId 屏蔽旧回调 （
     this.stop();
 
@@ -234,6 +238,7 @@ export class AudioPlayer extends EventEmitter {
     this.spawnFailed = false;
     this.emptyFrameAttempts = 0;
     this.currentSongDuration = songDuration;
+    this.currentGainDb = gainDb;
 
     if (this.consecutiveFailures >= AudioPlayer.MAX_CONSECUTIVE_FAILURES) {
       this.logger.error({ failures: this.consecutiveFailures }, "FFmpeg failures limit reached");
@@ -247,7 +252,7 @@ export class AudioPlayer extends EventEmitter {
       return;
     }
 
-    const args = buildFfmpegArgs(url, seekSeconds);
+    const args = buildFfmpegArgs(url, seekSeconds, this.currentGainDb);
 
     const ffmpegBin = getFfmpegCommand();
     this.ffmpeg = spawn(ffmpegBin, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -376,7 +381,7 @@ export class AudioPlayer extends EventEmitter {
       return;
     }
 
-    const args = buildFfmpegArgs(tempFile, seekSeconds);
+    const args = buildFfmpegArgs(tempFile, seekSeconds, this.currentGainDb);
     const ffmpegBin = getFfmpegCommand();
     this.ffmpeg = spawn(ffmpegBin, args, { stdio: ["ignore", "pipe", "pipe"] });
 
@@ -802,9 +807,10 @@ export class AudioPlayer extends EventEmitter {
     // transport is delegated to the SpotifyController by the caller (Task 7).
     if (this.externalMode) return;
     if (this.currentUrl && Number.isFinite(seconds) && seconds >= 0) {
-      this.play(this.currentUrl, seconds, this.currentSongDuration);
+      this.play(this.currentUrl, seconds, this.currentSongDuration, this.currentGainDb);
     }
   }
+  getGainDb(): number { return this.currentGainDb; }
   pause(): void { if (this.state === "playing") this.state = "paused"; }
   resume(): void { if (this.state === "paused") { this.state = "playing"; this.nextFrameTime = performance.now(); } }
   resetFailures(): void { this.consecutiveFailures = 0; }

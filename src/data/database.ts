@@ -126,6 +126,14 @@ export interface FavoritePlaylist {
   createdAt: string;
 }
 
+export interface CachedLoudness {
+  platform: string;
+  songId: string;
+  integratedLoudness: number;
+  truePeak: number;
+  gainDb: number;
+}
+
 export interface BotDatabase {
   db: Database.Database;
   addPlayHistory(entry: PlayHistoryEntry): void;
@@ -153,6 +161,15 @@ export interface BotDatabase {
   saveQueueState(state: QueueStateRow): void;
   getQueueState(botId: string): QueueStateRow | null;
   clearQueueState(botId: string): void;
+  // Audio loudness caching
+  getSongLoudness(platform: string, songId: string): CachedLoudness | null;
+  saveSongLoudness(
+    platform: string,
+    songId: string,
+    integratedLoudness: number,
+    truePeak: number,
+    gainDb: number,
+  ): void;
   close(): void;
 }
 
@@ -327,6 +344,16 @@ function initTables(db: Database.Database): void {
       isFmMode     INTEGER NOT NULL DEFAULT 0,
       fmPlatform   TEXT NOT NULL DEFAULT '',
       updatedAt    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS audio_loudness (
+      platform           TEXT NOT NULL,
+      songId             TEXT NOT NULL,
+      integratedLoudness REAL NOT NULL,
+      truePeak           REAL NOT NULL,
+      gainDb             REAL NOT NULL,
+      createdAt          TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (platform, songId)
     );
   `);
 }
@@ -513,6 +540,22 @@ export function createDatabase(dbPath: string): BotDatabase {
   `);
   const selectQueueState = db.prepare("SELECT * FROM queue_state WHERE botId = ?");
   const deleteQueueState = db.prepare("DELETE FROM queue_state WHERE botId = ?");
+
+  const selectLoudness = db.prepare(`
+    SELECT platform, songId, integratedLoudness, truePeak, gainDb
+    FROM audio_loudness
+    WHERE platform = ? AND songId = ?
+  `);
+
+  const upsertLoudness = db.prepare(`
+    INSERT INTO audio_loudness (platform, songId, integratedLoudness, truePeak, gainDb)
+    VALUES (@platform, @songId, @integratedLoudness, @truePeak, @gainDb)
+    ON CONFLICT(platform, songId) DO UPDATE SET
+      integratedLoudness = excluded.integratedLoudness,
+      truePeak = excluded.truePeak,
+      gainDb = excluded.gainDb,
+      createdAt = datetime('now')
+  `);
 
   return {
     db,
@@ -711,6 +754,21 @@ export function createDatabase(dbPath: string): BotDatabase {
 
     clearQueueState(botId) {
       deleteQueueState.run(botId);
+    },
+
+    getSongLoudness(platform, songId) {
+      const row = selectLoudness.get(platform, songId) as CachedLoudness | undefined;
+      return row ?? null;
+    },
+
+    saveSongLoudness(platform, songId, integratedLoudness, truePeak, gainDb) {
+      upsertLoudness.run({
+        platform,
+        songId,
+        integratedLoudness,
+        truePeak,
+        gainDb,
+      });
     },
 
     close() {

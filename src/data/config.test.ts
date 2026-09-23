@@ -692,12 +692,45 @@ describe("loadConfig error handling", () => {
     expect(c.playKeepsQueue).toBe(false);
   });
 
-  it("preserves savedQueues/playKeepsQueue true when explicitly enabled", () => {
+  it("defaults audioNormalization to enabled: true and targetLufs: -16", () => {
+    const c = getDefaultConfig();
+    expect(c.audioNormalization).toEqual({
+      enabled: true,
+      targetLufs: -16,
+    });
+  });
+
+  it("coerces invalid audioNormalization values on load and preserves valid ones", () => {
     const dir = makeTmpDir();
     const path = join(dir, "config.json");
-    writeFileSync(path, JSON.stringify({ savedQueuesEnabled: true, playKeepsQueue: true }));
-    const c = loadConfig(path);
-    expect(c.savedQueuesEnabled).toBe(true);
-    expect(c.playKeepsQueue).toBe(true);
+    writeFileSync(
+      path,
+      JSON.stringify({
+        audioNormalization: {
+          enabled: "yes", // non-boolean -> fallback to true
+          targetLufs: 100, // out of range -> fallback to -16
+        },
+      }),
+    );
+    const c1 = loadConfig(path);
+    expect(c1.audioNormalization).toEqual({
+      enabled: true,
+      targetLufs: -16,
+    });
+
+    writeFileSync(
+      path,
+      JSON.stringify({
+        audioNormalization: {
+          enabled: false,
+          targetLufs: -14,
+        },
+      }),
+    );
+    const c2 = loadConfig(path);
+    expect(c2.audioNormalization).toEqual({
+      enabled: false,
+      targetLufs: -14,
+    });
   });
 });

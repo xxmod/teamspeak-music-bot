@@ -7,6 +7,7 @@ import {
 } from "../ts-protocol/client.js";
 import { AudioPlayer } from "../audio/player.js";
 import { PlayQueue, PlayMode, type QueuedSong } from "../audio/queue.js";
+import { analyzeAudioLoudness } from "../audio/normalizer.js";
 import type { MusicProvider, Platform, Song } from "../music/provider.js";
 import {
   parseCommand,
@@ -1087,7 +1088,22 @@ export class BotInstance extends EventEmitter {
       song.url = result.url;
       // 试听片段用试听时长（让 player nearEnd 正确触发自动切歌）；完整曲回退 song.duration
       this.effectiveDuration = result.trialDuration ?? song.duration;
-      this.player.play(result.url, 0, this.effectiveDuration);
+
+      let gainDb = 0;
+      if (this.config.audioNormalization?.enabled) {
+        gainDb = await this.resolveSongGain(song, result.url);
+      }
+
+      if (gainDb !== 0) {
+        this.player.play(result.url, 0, this.effectiveDuration, gainDb);
+      } else {
+        this.player.play(result.url, 0, this.effectiveDuration);
+      }
+
+      if (this.config.audioNormalization?.enabled) {
+        this.preAnalyzeNextTrack();
+      }
+
       // Jellyfin playback reporting: open a session for jellyfin tracks (the
       // reporter closes the previous one itself); close any open session when
       // playback moves to another source. Fire-and-forget — never blocks play.
@@ -1114,6 +1130,78 @@ export class BotInstance extends EventEmitter {
       this.logger.error({ err, songId: song.id }, "Failed to resolve URL");
       return false;
     }
+  }
+
+  /**
+   * 获取或提前分析当前曲目的音量增益分贝。若已缓存则秒返，未分析则调用 FFmpeg loudnorm 分析并写入数据库。
+   */
+  private async resolveSongGain(song: QueuedSong, url: string): Promise<number> {
+    try {
+      const cached = this.database.getSongLoudness(song.platform, song.id);
+      if (cached) {
+        return cached.gainDb;
+      }
+      const targetLufs = this.config.audioNormalization?.targetLufs ?? -16;
+      const analysis = await analyzeAudioLoudness(url, {
+        targetLufs,
+        timeoutMs: 6000,
+        logger: this.logger,
+      });
+      if (analysis) {
+        this.database.saveSongLoudness(
+          song.platform,
+          song.id,
+          analysis.integratedLoudness,
+          analysis.truePeak,
+          analysis.gainDb,
+        );
+        return analysis.gainDb;
+      }
+    } catch (err) {
+      this.logger.warn({ err, songId: song.id }, "Failed to analyze song loudness — falling back to 0 dB");
+    }
+    return 0;
+  }
+
+  /**
+   * 后台异步预分析队列中下一首曲目，提前入库，消除后续切歌延迟。
+   */
+  private preAnalyzeNextTrack(): void {
+    const nextSong = this.queue.peekNext();
+    if (!nextSong || nextSong.platform === "spotify") return;
+
+    const cached = this.database.getSongLoudness(nextSong.platform, nextSong.id);
+    if (cached) return;
+
+    (async () => {
+      try {
+        const provider = this.getProviderFor(nextSong.platform);
+        const res = await provider.getSongUrl(nextSong.id);
+        if (!res?.url || isSpotifyUri(res.url)) return;
+
+        const targetLufs = this.config.audioNormalization?.targetLufs ?? -16;
+        const analysis = await analyzeAudioLoudness(res.url, {
+          targetLufs,
+          timeoutMs: 12000,
+          logger: this.logger,
+        });
+        if (analysis) {
+          this.database.saveSongLoudness(
+            nextSong.platform,
+            nextSong.id,
+            analysis.integratedLoudness,
+            analysis.truePeak,
+            analysis.gainDb,
+          );
+          this.logger.debug(
+            { songId: nextSong.id, platform: nextSong.platform, gainDb: analysis.gainDb },
+            "Background loudness pre-analysis completed for next track",
+          );
+        }
+      } catch (err) {
+        this.logger.debug({ err, songId: nextSong.id }, "Background loudness pre-analysis failed");
+      }
+    })().catch(() => {});
   }
 
   private async syncProfileToSong(song: QueuedSong | null): Promise<void> {
