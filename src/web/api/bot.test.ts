@@ -260,7 +260,11 @@ describe("bot router /settings", () => {
     expect(config.adminGroups).toEqual([6]);
   });
 
-  it("GET and POST /settings handles audioNormalization configuration", async () => {
+  it("GET and POST /settings handles audioNormalization configuration and clears cache when targetLufs changes", async () => {
+    // Seed database with a loudness entry
+    botDb.saveSongLoudness("netease", "song-cached", -20, -1, 4);
+    expect(botDb.getSongLoudnessCount()).toBe(1);
+
     const getRes = await request(app).get("/api/bot/settings").set("Cookie", cookie);
     expect(getRes.status).toBe(200);
     expect(getRes.body.audioNormalization).toEqual(config.audioNormalization);
@@ -283,6 +287,10 @@ describe("bot router /settings", () => {
       enabled: false,
       targetLufs: -14,
     });
+
+    // Cache should be cleared because targetLufs changed from -16 to -14
+    expect(botDb.getSongLoudnessCount()).toBe(0);
+    expect(botDb.getSongLoudness("netease", "song-cached")).toBeNull();
   });
 
   it("GET /settings includes a masked spotify block (hasClientSecret, never a raw secret)", async () => {

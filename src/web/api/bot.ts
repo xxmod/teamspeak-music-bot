@@ -155,7 +155,17 @@ export function createBotRouter(
         req.body.audioNormalization.targetLufs >= -30 &&
         req.body.audioNormalization.targetLufs <= -6
       ) {
-        config.audioNormalization.targetLufs = req.body.audioNormalization.targetLufs;
+        const oldLufs = config.audioNormalization.targetLufs;
+        const newLufs = req.body.audioNormalization.targetLufs;
+        if (oldLufs !== newLufs) {
+          config.audioNormalization.targetLufs = newLufs;
+          botDb.clearSongLoudness();
+          botDb.checkAndSyncTargetLufs(newLufs);
+          logger.info(
+            { oldLufs, newLufs },
+            "Target LUFS changed — cleared cached audio loudness database",
+          );
+        }
       }
     }
 

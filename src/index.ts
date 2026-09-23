@@ -51,6 +51,15 @@ async function main() {
     logger.error({ reason }, "Unhandled promise rejection");
   });
   const db = createDatabase(DB_PATH);
+  if (config.audioNormalization) {
+    const cleared = db.checkAndSyncTargetLufs(config.audioNormalization.targetLufs);
+    if (cleared) {
+      logger.info(
+        { targetLufs: config.audioNormalization.targetLufs },
+        "Target LUFS in config changed since last run — cleared audio loudness cache",
+      );
+    }
+  }
 
   const apiServer = createApiServerManager(
     {

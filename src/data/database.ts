@@ -171,6 +171,9 @@ export interface BotDatabase {
     truePeak: number,
     gainDb: number,
   ): void;
+  clearSongLoudness(): void;
+  getSongLoudnessCount(): number;
+  checkAndSyncTargetLufs(targetLufs: number): boolean;
   close(): void;
 }
 
@@ -573,6 +576,15 @@ export function createDatabase(dbPath: string): BotDatabase {
     )
   `);
 
+  const clearLoudness = db.prepare("DELETE FROM audio_loudness");
+  const countLoudness = db.prepare("SELECT count(*) as c FROM audio_loudness");
+  const selectTargetLufs = db.prepare(
+    "SELECT value FROM schema_meta WHERE key = 'audio_normalization_target_lufs'",
+  );
+  const upsertTargetLufs = db.prepare(
+    "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('audio_normalization_target_lufs', ?)",
+  );
+
   return {
     db,
 
@@ -789,6 +801,30 @@ export function createDatabase(dbPath: string): BotDatabase {
         gainDb,
       });
       pruneLoudness.run(MAX_AUDIO_LOUDNESS_CACHE);
+    },
+
+    clearSongLoudness() {
+      clearLoudness.run();
+    },
+
+    getSongLoudnessCount() {
+      const row = countLoudness.get() as { c: number } | undefined;
+      return row?.c ?? 0;
+    },
+
+    checkAndSyncTargetLufs(targetLufs) {
+      const row = selectTargetLufs.get() as { value: string } | undefined;
+      const targetStr = String(targetLufs);
+      if (!row) {
+        upsertTargetLufs.run(targetStr);
+        return false;
+      }
+      if (row.value !== targetStr) {
+        clearLoudness.run();
+        upsertTargetLufs.run(targetStr);
+        return true;
+      }
+      return false;
     },
 
     close() {

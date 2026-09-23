@@ -405,4 +405,39 @@ describe("guest principal migration", () => {
     d.db.close();
     rmSync(dir, { recursive: true, force: true });
   });
+
+  it("clears loudness cache and handles targetLufs syncing on change", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tsmb-db-loudness-clear-"));
+    const p = join(dir, "t.db");
+    const d = createDatabase(p);
+
+    d.saveSongLoudness("netease", "s-1", -18, -2, 2);
+    d.saveSongLoudness("qq", "s-2", -14, -1, -2);
+    expect(d.getSongLoudnessCount()).toBe(2);
+
+    // Initial checkAndSyncTargetLufs sets current value without clearing
+    const cleared1 = d.checkAndSyncTargetLufs(-16);
+    expect(cleared1).toBe(false);
+    expect(d.getSongLoudnessCount()).toBe(2);
+
+    // Same targetLufs: no clearing
+    const clearedSame = d.checkAndSyncTargetLufs(-16);
+    expect(clearedSame).toBe(false);
+    expect(d.getSongLoudnessCount()).toBe(2);
+
+    // Different targetLufs (-14): clears database and updates record
+    const clearedDiff = d.checkAndSyncTargetLufs(-14);
+    expect(clearedDiff).toBe(true);
+    expect(d.getSongLoudnessCount()).toBe(0);
+    expect(d.getSongLoudness("netease", "s-1")).toBeNull();
+
+    // Explicit clearSongLoudness
+    d.saveSongLoudness("netease", "s-3", -20, -1, 4);
+    expect(d.getSongLoudnessCount()).toBe(1);
+    d.clearSongLoudness();
+    expect(d.getSongLoudnessCount()).toBe(0);
+
+    d.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
 });
