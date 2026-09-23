@@ -17,13 +17,13 @@ export interface LoudnessAnalysis {
 export interface NormalizerOptions {
   targetLufs?: number;        // 默认 -16 LUFS
   timeoutMs?: number;         // 超时毫秒数，默认 8000ms
-  maxAnalyzeSeconds?: number; // 最多分析前多少秒，默认 180s
+  maxAnalyzeSeconds?: number; // 最多分析前多少秒，默认 60s
   logger?: Logger;
 }
 
 export const DEFAULT_TARGET_LUFS = -16;
 export const DEFAULT_TIMEOUT_MS = 8000;
-export const DEFAULT_MAX_ANALYZE_SECONDS = 180;
+export const DEFAULT_MAX_ANALYZE_SECONDS = 60;
 
 /** 最大允许正向放大增益（dB），防止对极轻微噪音产生过度放大 */
 export const MAX_BOOST_GAIN_DB = 12;
