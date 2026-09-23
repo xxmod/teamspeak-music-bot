@@ -3,7 +3,15 @@
 # One-click deployment — all dependencies included
 # ==========================================
 
-# --- Stage 1: Build backend + frontend ---
+# --- Stage 1: Build frontend ---
+FROM node:22-slim AS web-builder
+WORKDIR /app/web
+COPY web/package*.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
+# --- Stage 2: Build backend & compile native modules ---
 FROM node:22-slim AS builder
 
 # Install build tools for native modules (opus, better-sqlite3)
@@ -13,23 +21,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install backend dependencies
+# Install backend dependencies (compiles native addons once)
 COPY package*.json ./
 RUN npm ci
 
-# Install frontend dependencies
-COPY web/package*.json ./web/
-RUN cd web && npm ci
-
-# Copy source and build
+# Copy backend source and compile TypeScript
 COPY . .
-RUN npm run build
+RUN npx tsc
 
-# Install production dependencies (with native addons compiled) in the builder
-# so we don't need build tools in the production image.
-RUN rm -rf node_modules && npm ci --production && npm cache clean --force
+# Prune devDependencies to keep only production dependencies (preserves compiled native addons)
+RUN npm prune --omit=dev && npm cache clean --force
 
-# --- Stage 2: Production image ---
+# --- Stage 3: Production image ---
 FROM node:22-slim
 
 # Install system FFmpeg — the ffmpeg-static npm package bundles a pre-compiled
@@ -41,9 +44,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy built output and pre-compiled production node_modules from builder
+# Copy built output and pre-compiled production node_modules
 COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/web/dist ./web/dist
+COPY --from=web-builder /app/web/dist ./web/dist
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/node_modules ./node_modules
 # package.json declares a `prestart` preflight, so `npm start` inside the
