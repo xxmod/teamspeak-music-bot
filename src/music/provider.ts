@@ -104,8 +104,12 @@ export interface MusicProvider {
   setCookie(cookie: string): void;
   getCookie(): string;
   getAuthStatus(): Promise<AuthStatus>;
-  getPersonalFm?(): Promise<Song[]>;
-  getDailyRecommendSongs?(): Promise<Song[]>;
-  getUserPlaylists?(): Promise<Playlist[]>;
+  getPersonalFm?(cookieOverride?: string): Promise<Song[]>;
+  getDailyRecommendSongs?(cookieOverride?: string): Promise<Song[]>;
+  getUserPlaylists?(cookieOverride?: string): Promise<Playlist[]>;
   getPlaylistDetail?(playlistId: string): Promise<PlaylistDetail | null>;
+  checkQrCodeForCookie?(
+    key: string
+  ): Promise<{ status: "waiting" | "scanned" | "confirmed" | "expired"; cookie?: string }>;
 }
+

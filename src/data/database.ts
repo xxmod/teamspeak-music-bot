@@ -174,6 +174,11 @@ export interface BotDatabase {
   clearSongLoudness(): void;
   getSongLoudnessCount(): number;
   checkAndSyncTargetLufs(targetLufs: number): boolean;
+  // User platform cookies
+  setUserCookie(userId: string, platform: string, cookie: string): void;
+  getUserCookie(userId: string, platform: string): string | null;
+  getUserCookies(userId: string): Record<string, { configured: boolean; updatedAt: number }>;
+  deleteUserCookie(userId: string, platform: string): boolean;
   close(): void;
 }
 
@@ -360,6 +365,16 @@ function initTables(db: Database.Database): void {
       PRIMARY KEY (platform, songId)
     );
     CREATE INDEX IF NOT EXISTS idx_audio_loudness_createdAt ON audio_loudness(createdAt);
+
+    CREATE TABLE IF NOT EXISTS user_cookies (
+      userId    TEXT NOT NULL,
+      platform  TEXT NOT NULL,
+      cookie    TEXT NOT NULL,
+      updatedAt INTEGER NOT NULL,
+      PRIMARY KEY (userId, platform),
+      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_cookies_userId ON user_cookies(userId);
   `);
 }
 
@@ -584,6 +599,23 @@ export function createDatabase(dbPath: string): BotDatabase {
   const upsertTargetLufs = db.prepare(
     "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('audio_normalization_target_lufs', ?)",
   );
+
+  const upsertUserCookie = db.prepare(`
+    INSERT INTO user_cookies (userId, platform, cookie, updatedAt)
+    VALUES (@userId, @platform, @cookie, @updatedAt)
+    ON CONFLICT(userId, platform) DO UPDATE SET
+      cookie = excluded.cookie,
+      updatedAt = excluded.updatedAt
+  `);
+  const selectUserCookie = db.prepare(`
+    SELECT cookie FROM user_cookies WHERE userId = ? AND platform = ?
+  `);
+  const selectAllUserCookies = db.prepare(`
+    SELECT platform, updatedAt FROM user_cookies WHERE userId = ?
+  `);
+  const deleteUserCookieStmt = db.prepare(`
+    DELETE FROM user_cookies WHERE userId = ? AND platform = ?
+  `);
 
   return {
     db,
@@ -825,6 +857,34 @@ export function createDatabase(dbPath: string): BotDatabase {
         return true;
       }
       return false;
+    },
+
+    setUserCookie(userId: string, platform: string, cookie: string) {
+      upsertUserCookie.run({
+        userId,
+        platform,
+        cookie,
+        updatedAt: Date.now(),
+      });
+    },
+
+    getUserCookie(userId: string, platform: string) {
+      const row = selectUserCookie.get(userId, platform) as { cookie: string } | undefined;
+      return row?.cookie ?? null;
+    },
+
+    getUserCookies(userId: string) {
+      const rows = selectAllUserCookies.all(userId) as Array<{ platform: string; updatedAt: number }>;
+      const res: Record<string, { configured: boolean; updatedAt: number }> = {};
+      for (const row of rows) {
+        res[row.platform] = { configured: true, updatedAt: row.updatedAt };
+      }
+      return res;
+    },
+
+    deleteUserCookie(userId: string, platform: string) {
+      const res = deleteUserCookieStmt.run(userId, platform);
+      return res.changes > 0;
     },
 
     close() {

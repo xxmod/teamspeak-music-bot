@@ -27,6 +27,7 @@ const LABELS: Record<Source, string> = {
   qq: 'QQ',
   kugou: '酷狗',
   spotify: 'Spotify',
+  bilibili: '哔哩哔哩',
 };
 
 defineProps<{

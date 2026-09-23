@@ -440,4 +440,49 @@ describe("guest principal migration", () => {
     d.db.close();
     rmSync(dir, { recursive: true, force: true });
   });
+
+  it("manages user cookies and cascades on user delete", () => {
+    const dir = mkdtempSync(join(tmpdir(), "db-cookies-test-"));
+    const dbPath = join(dir, "bot.db");
+    const d = createDatabase(dbPath);
+
+    // Create a user first (for foreign key)
+    d.db.prepare(
+      "INSERT INTO users (id, username, passwordHash, createdAt, updatedAt, role) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run("user-1", "alice", "hash", Date.now(), Date.now(), "member");
+
+    // Initially null
+    expect(d.getUserCookie("user-1", "netease")).toBeNull();
+    expect(d.getUserCookies("user-1")).toEqual({});
+
+    // Set netease cookie
+    d.setUserCookie("user-1", "netease", "MUSIC_U=12345");
+    expect(d.getUserCookie("user-1", "netease")).toBe("MUSIC_U=12345");
+
+    // Update netease cookie (upsert)
+    d.setUserCookie("user-1", "netease", "MUSIC_U=67890");
+    expect(d.getUserCookie("user-1", "netease")).toBe("MUSIC_U=67890");
+
+    // Set qq cookie
+    d.setUserCookie("user-1", "qq", "uin=123; qm_keyst=abc");
+    const cookies = d.getUserCookies("user-1");
+    expect(cookies.netease?.configured).toBe(true);
+    expect(cookies.qq?.configured).toBe(true);
+    expect(cookies.kugou).toBeUndefined();
+
+    // Delete qq cookie
+    const deleted = d.deleteUserCookie("user-1", "qq");
+    expect(deleted).toBe(true);
+    expect(d.getUserCookie("user-1", "qq")).toBeNull();
+    expect(d.deleteUserCookie("user-1", "qq")).toBe(false);
+
+    // Verify cascade deletion when user is deleted
+    d.db.prepare("DELETE FROM users WHERE id = ?").run("user-1");
+    expect(d.getUserCookie("user-1", "netease")).toBeNull();
+    expect(d.getUserCookies("user-1")).toEqual({});
+
+    d.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
 });
+

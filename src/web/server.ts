@@ -21,6 +21,7 @@ import { createAuditRouter } from "./api/audit.js";
 import { createFavoritesRouter } from "./api/favorites.js";
 import { createSavedQueuesRouter } from "./api/saved-queues.js";
 import { createSpotifyRouter } from "./api/spotify.js";
+import { createUserCookiesRouter } from "./api/user-cookies.js";
 import type { SpotifyOAuth } from "../music/spotify/spotify-oauth.js";
 import type { SpotifyProvider } from "../music/spotify/provider.js";
 import type { JellyfinProvider } from "../music/jellyfin.js";
@@ -166,7 +167,20 @@ export function createWebServer(options: WebServerOptions): WebServer {
   );
   app.use(
     "/api/music",
-    createMusicRouter(options.neteaseProvider, options.qqProvider, options.bilibiliProvider, logger, options.localProvider, options.config, options.kugouProvider, options.spotifyProvider, options.jellyfinProvider, options.configPath)
+    createMusicRouter(options.neteaseProvider, options.qqProvider, options.bilibiliProvider, logger, options.localProvider, options.config, options.kugouProvider, options.spotifyProvider, options.jellyfinProvider, options.configPath, options.database)
+  );
+  app.use(
+    "/api/user/cookies",
+    createUserCookiesRouter(
+      options.database,
+      {
+        netease: options.neteaseProvider,
+        qq: options.qqProvider,
+        bilibili: options.bilibiliProvider,
+        kugou: options.kugouProvider,
+      },
+      logger
+    )
   );
   app.use("/api/player", createPlayerRouter(
     options.botManager, logger, options.database,

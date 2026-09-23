@@ -41,7 +41,7 @@
         </div>
         <Icon icon="mdi:play-circle" class="fm-play-icon" />
       </div>
-      <div v-if="enabled('qq') && store.authStatus.qq" class="fm-card hover-scale" @click="playFm('qq')">
+      <div v-if="enabled('qq') && (store.authStatus.qq || store.userCookies.qq?.configured)" class="fm-card hover-scale" @click="playFm('qq')">
         <div class="fm-icon-wrapper qq">
           <Icon icon="mdi:radar" class="fm-icon" />
         </div>
@@ -51,7 +51,7 @@
         </div>
         <Icon icon="mdi:play-circle" class="fm-play-icon" />
       </div>
-      <div v-if="enabled('kugou') && store.authStatus.kugou" class="fm-card hover-scale" @click="playFm('kugou')">
+      <div v-if="enabled('kugou') && (store.authStatus.kugou || store.userCookies.kugou?.configured)" class="fm-card hover-scale" @click="playFm('kugou')">
         <div class="fm-icon-wrapper kugou">
           <Icon icon="mdi:radio-tower" class="fm-icon" />
         </div>
@@ -261,26 +261,26 @@ const userPlaylistsExpanded = ref(false);
 const enabled = (p: string) => store.enabledProviders.includes(p);
 const fmCardCount = computed(() =>
   ['jellyfin', 'netease'].filter(enabled).length +
-  (enabled('qq') && store.authStatus.qq ? 1 : 0) +
-  (enabled('kugou') && store.authStatus.kugou ? 1 : 0),
+  (enabled('qq') && (store.authStatus.qq || store.userCookies.qq?.configured) ? 1 : 0) +
+  (enabled('kugou') && (store.authStatus.kugou || store.userCookies.kugou?.configured) ? 1 : 0),
 );
 
 // Available sources per section. Jellyfin has no daily/recommend concept —
 // it gets its own home sections instead — so those two tab bars only ever
 // carry the legacy sources (which is also what their store maps are keyed by).
-type LegacySource = Exclude<Source, 'jellyfin'>;
+type LegacySource = Exclude<Source, 'jellyfin' | 'bilibili'>;
 
 // Recommend playlists work anonymously on netease (when enabled);
-// QQ requires login. This intentionally differs from dailyAvailable/userAvailable.
+// QQ requires login or user cookie. This intentionally differs from dailyAvailable/userAvailable.
 const recommendAvailable = computed<LegacySource[]>(() => {
   const s: LegacySource[] = [];
   if (enabled('netease')) s.push('netease');
-  if (enabled('qq') && store.authStatus.qq) s.push('qq');
-  if (enabled('kugou') && store.authStatus.kugou) s.push('kugou');
+  if (enabled('qq') && (store.authStatus.qq || store.userCookies.qq?.configured)) s.push('qq');
+  if (enabled('kugou') && (store.authStatus.kugou || store.userCookies.kugou?.configured)) s.push('kugou');
   return s;
 });
 const dailyAvailable = computed<LegacySource[]>(() =>
-  store.availableSources.filter((s): s is LegacySource => s !== 'jellyfin'),
+  store.availableSources.filter((s): s is LegacySource => s !== 'jellyfin' && s !== 'bilibili'),
 );
 const userAvailable = computed<Source[]>(() => store.availableSources);
 

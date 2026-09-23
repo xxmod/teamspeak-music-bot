@@ -131,6 +131,11 @@ export class NeteaseProvider implements MusicProvider {
     return this.cookie ? { cookie: this.cookie } : {};
   }
 
+  private getCookieParams(cookieOverride?: string): Record<string, string> {
+    const c = cookieOverride !== undefined ? cookieOverride : this.cookie;
+    return c ? { cookie: c } : {};
+  }
+
   async search(query: string, limit = 20, offset = 0): Promise<SearchResult> {
     // /cloudsearch supports offset for every type. Songs, playlists (type 1000)
     // and albums (type 10) are all limit/offset-driven so the web can page past
@@ -262,6 +267,25 @@ export class NeteaseProvider implements MusicProvider {
     }
   }
 
+  async checkQrCodeForCookie(
+    key: string
+  ): Promise<{ status: "waiting" | "scanned" | "confirmed" | "expired"; cookie?: string }> {
+    const res = await this.api.get("/login/qr/check", {
+      params: { key, timestamp: Date.now() },
+    });
+    const code = res.data?.code;
+    switch (code) {
+      case 801:
+        return { status: "waiting" };
+      case 802:
+        return { status: "scanned" };
+      case 803:
+        return { status: "confirmed", cookie: res.data?.cookie || "" };
+      default:
+        return { status: "expired" };
+    }
+  }
+
   async sendSmsCode(phone: string): Promise<boolean> {
     const res = await this.api.get("/captcha/sent", {
       params: { phone },
@@ -307,16 +331,16 @@ export class NeteaseProvider implements MusicProvider {
     return { loggedIn: false };
   }
 
-  async getPersonalFm(): Promise<Song[]> {
+  async getPersonalFm(cookieOverride?: string): Promise<Song[]> {
     const res = await this.api.get("/personal_fm", {
-      params: { ...this.cookieParams },
+      params: { ...this.getCookieParams(cookieOverride) },
     });
     return mapNeteaseSongs(res.data?.data);
   }
 
-  async getDailyRecommendSongs(): Promise<Song[]> {
+  async getDailyRecommendSongs(cookieOverride?: string): Promise<Song[]> {
     const res = await this.api.get("/recommend/songs", {
-      params: { ...this.cookieParams },
+      params: { ...this.getCookieParams(cookieOverride) },
     });
     return mapNeteaseSongs(res.data?.data?.dailySongs);
   }
@@ -336,16 +360,17 @@ export class NeteaseProvider implements MusicProvider {
     };
   }
 
-  async getUserPlaylists(): Promise<Playlist[]> {
+  async getUserPlaylists(cookieOverride?: string): Promise<Playlist[]> {
+    const params = this.getCookieParams(cookieOverride);
     // First get user ID from login status
     const statusRes = await this.api.get("/login/status", {
-      params: { ...this.cookieParams },
+      params,
     });
     const uid = statusRes.data?.data?.profile?.userId;
     if (!uid) return [];
 
     const res = await this.api.get("/user/playlist", {
-      params: { uid, ...this.cookieParams },
+      params: { uid, ...params },
     });
     return (res.data?.playlist ?? []).map((p: any) => ({
       id: String(p.id),

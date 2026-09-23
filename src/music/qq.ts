@@ -125,13 +125,24 @@ export class QQMusicProvider implements MusicProvider {
     return this.cookie ? { cookie: this.cookie } : {};
   }
 
+  private getCookieParams(cookieOverride?: string): Record<string, string> {
+    const c = cookieOverride !== undefined ? cookieOverride : this.cookie;
+    return c ? { cookie: c } : {};
+  }
+
   private get directCookieHeaders(): Record<string, string> {
     return this.cookie ? { Cookie: this.cookie } : {};
   }
 
-  private buildMusicuPayload(module: string, method: string, param: Record<string, unknown>): Record<string, unknown> {
-    const uinMatch = /(?:^|; )(?:uin|qqmusic_uin)=o?0?(\d+)/.exec(this.cookie);
-    const pSkeyMatch = /(?:^|; )p_skey=([^;]+)/.exec(this.cookie);
+  private getDirectCookieHeaders(cookieOverride?: string): Record<string, string> {
+    const c = cookieOverride !== undefined ? cookieOverride : this.cookie;
+    return c ? { Cookie: c } : {};
+  }
+
+  private buildMusicuPayload(module: string, method: string, param: Record<string, unknown>, cookieOverride?: string): Record<string, unknown> {
+    const c = cookieOverride !== undefined ? cookieOverride : this.cookie;
+    const uinMatch = /(?:^|; )(?:uin|qqmusic_uin)=o?0?(\d+)/.exec(c);
+    const pSkeyMatch = /(?:^|; )p_skey=([^;]+)/.exec(c);
     return {
       comm: {
         ct: 24,
@@ -530,6 +541,32 @@ export class QQMusicProvider implements MusicProvider {
     return "waiting";
   }
 
+  async checkQrCodeForCookie(
+    key: string
+  ): Promise<{ status: "waiting" | "scanned" | "confirmed" | "expired"; cookie?: string }> {
+    const [qrsig, ptqrtoken] = key.split("|");
+    if (!qrsig || !ptqrtoken) return { status: "expired" };
+
+    let res;
+    try {
+      res = await this.api.post("/checkQQLoginQr", null, {
+        params: { qrsig, ptqrtoken },
+      });
+    } catch {
+      return { status: "expired" };
+    }
+
+    const body = res.data;
+    if (body?.isOk === true) {
+      const cookie: string = body.session?.cookie ?? "";
+      return { status: "confirmed", cookie };
+    }
+    if (body?.refresh === true) return { status: "expired" };
+    if (typeof body?.message === "string" && body.message.includes("未扫描"))
+      return { status: "waiting" };
+    return { status: "waiting" };
+  }
+
   setCookie(cookie: string): void {
     this.cookie = cookie;
     // Reset radar pagination so a re-login (different account) starts from the
@@ -572,12 +609,12 @@ export class QQMusicProvider implements MusicProvider {
     }
   }
 
-  async getDailyRecommendSongs(): Promise<Song[]> {
+  async getDailyRecommendSongs(cookieOverride?: string): Promise<Song[]> {
     // QQ has no per-user daily list; use newsong.NewSongServer (新歌速递)
     // as the closest analogue. Returns ~20 newly-released songs.
     try {
       const res = await this.api.get("/getNewSongs", {
-        params: { ...this.cookieParams },
+        params: { ...this.getCookieParams(cookieOverride) },
       });
       const list: any[] = res.data?.response?.new_song?.data?.songlist ?? [];
       return list.map((s: any) => ({
@@ -597,13 +634,13 @@ export class QQMusicProvider implements MusicProvider {
     }
   }
 
-  async getPersonalFm(): Promise<Song[]> {
-    const radarSongs = await this.getRadarRecommendSongs();
+  async getPersonalFm(cookieOverride?: string): Promise<Song[]> {
+    const radarSongs = await this.getRadarRecommendSongs(cookieOverride);
     if (radarSongs.length > 0) return radarSongs;
-    return this.getGuessRecommendSongs();
+    return this.getGuessRecommendSongs(cookieOverride);
   }
 
-  private async getRadarRecommendSongs(): Promise<Song[]> {
+  private async getRadarRecommendSongs(cookieOverride?: string): Promise<Song[]> {
     try {
       const page = this.radarPage;
       const res = await qqMusicuApi.post(
@@ -616,9 +653,10 @@ export class QQMusicProvider implements MusicProvider {
             ReqType: 0,
             FavSongs: [],
             EntranceSongs: [],
-          }
+          },
+          cookieOverride
         ),
-        { headers: { referer: "https://y.qq.com/", ...this.directCookieHeaders } }
+        { headers: { referer: "https://y.qq.com/", ...this.getDirectCookieHeaders(cookieOverride) } }
       );
       const tracks = (res.data?.req_0?.data?.VecSongs ?? [])
         .map((item: any) => item?.Track)
@@ -633,7 +671,7 @@ export class QQMusicProvider implements MusicProvider {
     }
   }
 
-  private async getGuessRecommendSongs(): Promise<Song[]> {
+  private async getGuessRecommendSongs(cookieOverride?: string): Promise<Song[]> {
     try {
       const res = await qqMusicuApi.post(
         "/cgi-bin/musicu.fcg",
@@ -646,9 +684,10 @@ export class QQMusicProvider implements MusicProvider {
             from: 0,
             scene: 0,
             song_ids: [],
-          }
+          },
+          cookieOverride
         ),
-        { headers: { referer: "https://y.qq.com/", ...this.directCookieHeaders } }
+        { headers: { referer: "https://y.qq.com/", ...this.getDirectCookieHeaders(cookieOverride) } }
       );
       return mapQqSongs(res.data?.req_0?.data?.Tracks ?? []);
     } catch {
@@ -656,9 +695,10 @@ export class QQMusicProvider implements MusicProvider {
     }
   }
 
-  async getUserPlaylists(): Promise<Playlist[]> {
-    if (!this.cookie) return [];
-    const uinMatch = /(?:^|; )uin=o?0?(\d+)/.exec(this.cookie);
+  async getUserPlaylists(cookieOverride?: string): Promise<Playlist[]> {
+    const cookie = cookieOverride !== undefined ? cookieOverride : this.cookie;
+    if (!cookie) return [];
+    const uinMatch = /(?:^|; )uin=o?0?(\d+)/.exec(cookie);
     const uin = uinMatch ? uinMatch[1] : "";
     if (!uin) return [];
 
@@ -666,16 +706,16 @@ export class QQMusicProvider implements MusicProvider {
     // Run them in parallel and concatenate (created first, then collected),
     // matching the order shown in the QQ Music desktop app.
     const [created, collected] = await Promise.all([
-      this.fetchCreatedPlaylists(uin),
-      this.fetchCollectedPlaylists(uin),
+      this.fetchCreatedPlaylists(uin, cookieOverride),
+      this.fetchCollectedPlaylists(uin, cookieOverride),
     ]);
     return [...created, ...collected];
   }
 
-  private async fetchCreatedPlaylists(uin: string): Promise<Playlist[]> {
+  private async fetchCreatedPlaylists(uin: string, cookieOverride?: string): Promise<Playlist[]> {
     try {
       const res = await this.api.get("/user/getUserPlaylists", {
-        params: { uin, ...this.cookieParams },
+        params: { uin, ...this.getCookieParams(cookieOverride) },
       });
       if (res.data?.response?.code !== 0) return [];
       return (res.data?.response?.data?.playlists ?? []).map((p: any) => {
@@ -695,10 +735,11 @@ export class QQMusicProvider implements MusicProvider {
     }
   }
 
-  private async fetchCollectedPlaylists(uin: string): Promise<Playlist[]> {
+  private async fetchCollectedPlaylists(uin: string, cookieOverride?: string): Promise<Playlist[]> {
     // c.y.qq.com fav endpoint: reqtype=3 returns collected playlists (cdlist).
     // Requires g_tk derived from the p_skey cookie.
-    const pSkeyMatch = /(?:^|; )p_skey=([^;]+)/.exec(this.cookie);
+    const cookie = cookieOverride !== undefined ? cookieOverride : this.cookie;
+    const pSkeyMatch = /(?:^|; )p_skey=([^;]+)/.exec(cookie);
     if (!pSkeyMatch) return [];
     const gtk = computeGtk(pSkeyMatch[1]);
 
@@ -720,7 +761,7 @@ export class QQMusicProvider implements MusicProvider {
             g_tk: gtk,
             format: "json",
           },
-          headers: { Cookie: this.cookie },
+          headers: { Cookie: cookie },
         });
         if (res.data?.code !== 0) break;
         const list: any[] = res.data?.data?.cdlist ?? [];

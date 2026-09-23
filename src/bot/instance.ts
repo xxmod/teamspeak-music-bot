@@ -190,6 +190,7 @@ export class BotInstance extends EventEmitter {
   private isFmMode = false;
   private fmProvider: MusicProvider | null = null;
   private fmRequesterName: string | undefined;
+  private fmCookieOverride: string | undefined;
   /** Results of the most recent !search, for "#N" selection (issue #90). */
   private lastSearchResults: Song[] = [];
   /** 当前曲实际播放时长（试听片段秒数或完整 duration）；resolveAndPlay 赋值。 */
@@ -913,6 +914,7 @@ export class BotInstance extends EventEmitter {
     this.isFmMode = false;
     this.fmProvider = null;
     this.fmRequesterName = undefined;
+    this.fmCookieOverride = undefined;
   }
 
   /** Chat-command source flags. No flag → the configured default platform
@@ -1697,7 +1699,11 @@ export class BotInstance extends EventEmitter {
     return this.startFm(this.getProvider(cmd.flags), requesterName);
   }
 
-  async startFm(provider: MusicProvider = this.neteaseProvider, requesterName?: string): Promise<string> {
+  async startFm(
+    provider: MusicProvider = this.neteaseProvider,
+    requesterName?: string,
+    cookieOverride?: string,
+  ): Promise<string> {
     // Match the !fm chat-command guard: refuse before mutating the queue when
     // offline, so the web /fm route can't wipe the queue + flip into FM mode
     // while nothing can actually play.
@@ -1707,7 +1713,7 @@ export class BotInstance extends EventEmitter {
     if (!provider.getPersonalFm) {
       return `Personal FM is not available for ${provider.platform}`;
     }
-    const songs = await provider.getPersonalFm();
+    const songs = await provider.getPersonalFm(cookieOverride);
     if (songs.length === 0)
       return "No FM songs available (need to login first)";
 
@@ -1720,6 +1726,7 @@ export class BotInstance extends EventEmitter {
     this.isFmMode = true;
     this.fmProvider = provider;
     this.fmRequesterName = requesterName?.trim() || undefined;
+    this.fmCookieOverride = cookieOverride;
     this.player.resetFailures();
 
     const first = this.queue.play();
@@ -1767,7 +1774,7 @@ export class BotInstance extends EventEmitter {
     const provider = this.fmProvider;
     if (!this.isFmMode || !provider?.getPersonalFm) return;
     try {
-      const songs = await provider.getPersonalFm();
+      const songs = await provider.getPersonalFm(this.fmCookieOverride);
       if (songs.length === 0) return;
       for (const song of songs) {
         this.queue.add(this.withRequester({ ...song, platform: provider.platform }, this.fmRequesterName));

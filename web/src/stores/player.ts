@@ -15,7 +15,7 @@ export interface Song {
   playedAt?: string;
 }
 
-export type Source = 'jellyfin' | 'netease' | 'qq' | 'kugou' | 'spotify';
+export type Source = 'jellyfin' | 'netease' | 'qq' | 'kugou' | 'spotify' | 'bilibili';
 
 export interface BiliPart {
   part: number;
@@ -140,7 +140,7 @@ export const usePlayerStore = defineStore('player', {
     // Home page cache, split by source
     recommendPlaylists: { netease: [] as PlaylistItem[], qq: [] as PlaylistItem[], kugou: [] as PlaylistItem[], spotify: [] as PlaylistItem[] },
     dailySongs:         { netease: [] as Song[],         qq: [] as Song[],         kugou: [] as Song[], spotify: [] as Song[] },
-    userPlaylists:      { jellyfin: [] as PlaylistItem[], netease: [] as PlaylistItem[], qq: [] as PlaylistItem[], kugou: [] as PlaylistItem[], spotify: [] as PlaylistItem[] },
+    userPlaylists:      { jellyfin: [] as PlaylistItem[], netease: [] as PlaylistItem[], qq: [] as PlaylistItem[], kugou: [] as PlaylistItem[], spotify: [] as PlaylistItem[], bilibili: [] as PlaylistItem[] },
     bilibiliPopular: [] as Song[],
     // Jellyfin home sections (shown only when the optional source is enabled)
     jellyfinLatestAlbums: [] as AlbumItem[],
@@ -148,6 +148,7 @@ export const usePlayerStore = defineStore('player', {
     jellyfinFavorites: [] as Song[],
     jellyfinGenres: [] as { id: string; name: string }[],
     authStatus: { jellyfin: false, netease: false, qq: false, kugou: false, spotify: false },
+    userCookies: {} as Record<string, { configured: boolean; updatedAt: number }>,
     lastFetchTime: 0,
 
     // Favorited playlists (fetched from server, isolated per WebUI user)
@@ -210,11 +211,13 @@ export const usePlayerStore = defineStore('player', {
     /** Sources that are currently logged in. Jellyfin (when enabled) leads. */
     availableSources(): Source[] {
       const s: Source[] = [];
-      if (this.authStatus.jellyfin) s.push('jellyfin');
-      if (this.authStatus.netease) s.push('netease');
-      if (this.authStatus.qq) s.push('qq');
-      if (this.authStatus.kugou) s.push('kugou');
-      if (this.authStatus.spotify) s.push('spotify');
+      const has = (p: string) => this.enabledProviders.includes(p);
+      if (has('jellyfin') && this.authStatus.jellyfin) s.push('jellyfin');
+      if (has('netease') && (this.authStatus.netease || this.userCookies.netease?.configured)) s.push('netease');
+      if (has('qq') && (this.authStatus.qq || this.userCookies.qq?.configured)) s.push('qq');
+      if (has('kugou') && (this.authStatus.kugou || this.userCookies.kugou?.configured)) s.push('kugou');
+      if (has('spotify') && this.authStatus.spotify) s.push('spotify');
+      if (has('bilibili') && this.userCookies.bilibili?.configured) s.push('bilibili');
       return s;
     },
     /** Whether a source is enabled server-side (enabledProviders gate). */
@@ -735,15 +738,16 @@ export const usePlayerStore = defineStore('player', {
       // Pre-rejected sentinel: mark handled so it never surfaces as unhandled.
       skip.catch(() => {});
 
-      // Always check auth status first — if it changed since the cached
-      // fetch (e.g., user logged in/out as a different account), the
+      // Always check auth status and user cookies first — if either changed since the cached
+      // fetch (e.g., user logged in/out or updated personal cookie), the
       // cached playlists belong to a different user and we MUST refetch.
-      const [jfAuthRes, neAuthRes, qqAuthRes, kugouAuthRes, spAuthRes] = await Promise.allSettled([
+      const [jfAuthRes, neAuthRes, qqAuthRes, kugouAuthRes, spAuthRes, userCookiesRes] = await Promise.allSettled([
         has('jellyfin') ? axios.get('/api/auth/status', { params: { platform: 'jellyfin' } }) : skip,
         has('netease') ? axios.get('/api/auth/status', { params: { platform: 'netease' } }) : skip,
         has('qq') ? axios.get('/api/auth/status', { params: { platform: 'qq' } }) : skip,
         has('kugou') ? axios.get('/api/auth/status', { params: { platform: 'kugou' } }) : skip,
         has('spotify') ? axios.get('/api/auth/status', { params: { platform: 'spotify' } }) : skip,
+        axios.get('/api/user/cookies'),
       ]);
       const newAuth = {
         jellyfin: jfAuthRes.status === 'fulfilled' && !!jfAuthRes.value.data?.loggedIn,
@@ -752,12 +756,18 @@ export const usePlayerStore = defineStore('player', {
         kugou:   kugouAuthRes.status === 'fulfilled' && !!kugouAuthRes.value.data?.loggedIn,
         spotify: spAuthRes.status === 'fulfilled' && !!spAuthRes.value.data?.loggedIn,
       };
+      const oldCookiesJson = JSON.stringify(this.userCookies);
+      const newUserCookies = userCookiesRes.status === 'fulfilled' ? (userCookiesRes.value.data?.cookies ?? {}) : this.userCookies;
+      const userCookiesChanged = JSON.stringify(newUserCookies) !== oldCookiesJson;
+      this.userCookies = newUserCookies;
+
       const authChanged =
         newAuth.jellyfin !== this.authStatus.jellyfin ||
         newAuth.netease !== this.authStatus.netease ||
         newAuth.qq !== this.authStatus.qq ||
         newAuth.kugou !== this.authStatus.kugou ||
-        newAuth.spotify !== this.authStatus.spotify;
+        newAuth.spotify !== this.authStatus.spotify ||
+        userCookiesChanged;
       this.authStatus.jellyfin = newAuth.jellyfin;
       this.authStatus.netease = newAuth.netease;
       this.authStatus.qq = newAuth.qq;
@@ -793,9 +803,8 @@ export const usePlayerStore = defineStore('player', {
             Promise.resolve(emptyPlaylists),
           ];
 
-      // 3. QQ data: only fetch when QQ is logged in. When not logged in,
-      // resolve to empty payloads so the same indexed handling works.
-      const qqPromises = has('qq') && this.authStatus.qq
+      // 3. QQ data: fetch when QQ is logged in globally OR user configured personal cookie
+      const qqPromises = has('qq') && (this.authStatus.qq || this.userCookies.qq?.configured)
         ? [
             axios.get('/api/music/recommend/playlists', { params: { platform: 'qq' } }),
             axios.get('/api/music/recommend/songs',     { params: { platform: 'qq' } }),
@@ -807,9 +816,8 @@ export const usePlayerStore = defineStore('player', {
             Promise.resolve(emptyPlaylists),
           ];
 
-      // 4. Kugou data: every section (incl. recommend playlists) needs login,
-      // so gate all three on auth like QQ.
-      const kugouPromises = has('kugou') && this.authStatus.kugou
+      // 4. Kugou data: fetch when Kugou is logged in globally OR user configured personal cookie
+      const kugouPromises = has('kugou') && (this.authStatus.kugou || this.userCookies.kugou?.configured)
         ? [
             axios.get('/api/music/recommend/playlists', { params: { platform: 'kugou' } }),
             axios.get('/api/music/recommend/songs',     { params: { platform: 'kugou' } }),
@@ -821,9 +829,17 @@ export const usePlayerStore = defineStore('player', {
             Promise.resolve(emptyPlaylists),
           ];
 
-      const biliPromise = has('bilibili')
-        ? axios.get('/api/music/bilibili/popular?limit=12')
-        : Promise.resolve(emptySongs);
+      const biliPromises = has('bilibili')
+        ? [
+            axios.get('/api/music/bilibili/popular?limit=12'),
+            this.userCookies.bilibili?.configured
+              ? axios.get('/api/music/user/playlists', { params: { platform: 'bilibili' } })
+              : Promise.resolve(emptyPlaylists),
+          ]
+        : [
+            Promise.resolve(emptySongs),
+            Promise.resolve(emptyPlaylists),
+          ];
 
       // 5. Jellyfin home sections. Favorites are guest-blocked server-side;
       // allSettled turns that 403 into an empty section.
@@ -847,11 +863,11 @@ export const usePlayerStore = defineStore('player', {
         ...neteasePromises,
         ...qqPromises,
         ...kugouPromises,
-        biliPromise,
+        ...biliPromises,
         ...jellyfinPromises,
       ]);
 
-      const [neRecPL, neDaily, neUserPL, qqRecPL, qqDaily, qqUserPL, kgRecPL, kgDaily, kgUserPL, bili,
+      const [neRecPL, neDaily, neUserPL, qqRecPL, qqDaily, qqUserPL, kgRecPL, kgDaily, kgUserPL, bili, biliUserPL,
         jfLatest, jfMost, jfFav, jfGenres, jfUserPL] = results;
 
       this.jellyfinLatestAlbums =
@@ -888,6 +904,8 @@ export const usePlayerStore = defineStore('player', {
       if (bili.status === 'fulfilled') {
         this.bilibiliPopular = bili.value.data.songs ?? [];
       }
+      this.userPlaylists.bilibili =
+        biliUserPL && biliUserPL.status === 'fulfilled' ? (biliUserPL.value.data.playlists ?? []) : [];
 
       // Only mark as fetched if at least the auth-status calls succeeded —
       // a fully failed fetch (network blip / server down) should NOT be
@@ -928,6 +946,21 @@ export const usePlayerStore = defineStore('player', {
         this.fetchQueue();
       } catch {
         this.notify('播放流派失败', 'error');
+      }
+    },
+
+    invalidateHomeCache() {
+      this.lastFetchTime = 0;
+    },
+
+    async fetchUserCookies() {
+      try {
+        const res = await axios.get('/api/user/cookies');
+        if (res.data?.cookies) {
+          this.userCookies = res.data.cookies;
+        }
+      } catch {
+        // Guest or unauthenticated, ignore
       }
     },
   },

@@ -3,6 +3,7 @@ import type { MusicProvider, Song, Album } from "../../music/provider.js";
 import { YouTubeProvider } from "../../music/youtube.js";
 import type { Logger } from "../../logger.js";
 import { isProviderEnabled, defaultPlatform, saveConfig, type BotConfig } from "../../data/config.js";
+import type { BotDatabase } from "../../data/database.js";
 import { requirePermission } from "../middleware/requirePermission.js";
 import { requireNotGuest } from "../middleware/requireNotGuest.js";
 import { authorize } from "../middleware/authorize.js";
@@ -70,9 +71,16 @@ export function createMusicRouter(
   // When set (alongside config), a quality change is persisted to config.json so
   // it survives a restart (#125). Omitted by unit-test routers → no persistence.
   configPath?: string,
+  db?: BotDatabase,
 ): Router {
   const router = Router();
   const youtubeProvider: MusicProvider = new YouTubeProvider();
+
+  function getUserCookieForPlatform(req: express.Request, platform: string): string | undefined {
+    if (!db || !req.user?.id) return undefined;
+    const cookie = db.getUserCookie(req.user.id, platform);
+    return cookie ?? undefined;
+  }
 
   function isLocalAudioEnabled(): boolean {
     return config?.localAudioEnabled !== false;
@@ -257,7 +265,8 @@ export function createMusicRouter(
     try {
       const provider = resolveProvider(req.query.platform, res);
       if (!provider) return;
-      const songs = await provider.getPlaylistSongs(req.params.id);
+      const userCookie = getUserCookieForPlatform(req, provider.platform);
+      const songs = await (provider as any).getPlaylistSongs(req.params.id, userCookie);
       res.json({ songs });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
@@ -305,7 +314,8 @@ export function createMusicRouter(
         res.status(501).json({ error: "Not supported by this provider" });
         return;
       }
-      const songs = await provider.getDailyRecommendSongs();
+      const userCookie = getUserCookieForPlatform(req, provider.platform);
+      const songs = await provider.getDailyRecommendSongs(userCookie);
       res.json({ songs });
     } catch (err) {
       logger.error({ err }, "Get daily recommend songs failed");
@@ -321,7 +331,8 @@ export function createMusicRouter(
         res.status(501).json({ error: "Not supported by this provider" });
         return;
       }
-      const songs = await provider.getPersonalFm();
+      const userCookie = getUserCookieForPlatform(req, provider.platform);
+      const songs = await provider.getPersonalFm(userCookie);
       res.json({ songs });
     } catch (err) {
       logger.error({ err }, "Get personal FM failed");
@@ -337,7 +348,8 @@ export function createMusicRouter(
         res.status(501).json({ error: "Not supported by this provider" });
         return;
       }
-      const playlists = await provider.getUserPlaylists();
+      const userCookie = getUserCookieForPlatform(req, provider.platform);
+      const playlists = await provider.getUserPlaylists(userCookie);
       res.json({ playlists });
     } catch (err) {
       logger.error({ err }, "Get user playlists failed");
@@ -353,7 +365,8 @@ export function createMusicRouter(
         res.status(501).json({ error: "Not supported by this provider" });
         return;
       }
-      const detail = await provider.getPlaylistDetail(req.params.id);
+      const userCookie = getUserCookieForPlatform(req, provider.platform);
+      const detail = await (provider as any).getPlaylistDetail(req.params.id, userCookie);
       if (!detail) {
         res.status(404).json({ error: "Playlist not found" });
         return;

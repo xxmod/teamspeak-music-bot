@@ -50,6 +50,11 @@
       <p v-if="ownPwSuccess" class="user-success">{{ ownPwSuccess }}</p>
     </section>
 
+    <!-- Personal Music Cookie (per-user credentials) -->
+    <section v-if="!session.isGuest.value" class="settings-section">
+      <UserCookieSettings />
+    </section>
+
     <!-- Bot Management (create/edit/delete/start-stop) requires bot.manage -->
     <section v-if="can('bot.manage')" class="settings-section">
       <h2 class="section-title">机器人管理</h2>
@@ -1215,6 +1220,7 @@ import { Icon } from '@iconify/vue';
 import axios from 'axios';
 import AvatarUpload from '../components/AvatarUpload.vue';
 import CustomAvatarRow from '../components/CustomAvatarRow.vue';
+import UserCookieSettings from '../components/UserCookieSettings.vue';
 import QRCode from 'qrcode';
 import { usePlayerStore } from '../stores/player.js';
 import { useSession } from '../composables/useSession.js';

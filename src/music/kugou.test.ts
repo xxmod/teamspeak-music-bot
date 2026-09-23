@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { mapKugouSong, mapKugouSongs, mapKugouAlbums, mapKugouPlaylist, mapKugouPlaylists, krcToLrc, KugouProvider } from "./kugou.js";
+import { mapKugouSong, mapKugouSongs, mapKugouAlbums, mapKugouPlaylist, mapKugouPlaylists, krcToLrc, KugouProvider, parseKugouCookie } from "./kugou.js";
 import { parseLyrics } from "./netease.js";
 
 describe("mapKugouSongs", () => {
@@ -220,5 +220,34 @@ describe("KugouProvider.search pagination", () => {
     const { p, get } = mockProvider();
     await p.search("hello", 20);
     expect(searchParams(get).page).toBe(1);
+  });
+});
+
+describe("parseKugouCookie", () => {
+  it("parses flat key-value pairs", () => {
+    const map = parseKugouCookie("userid=12345; token=abcde");
+    expect(map.userid).toBe("12345");
+    expect(map.token).toBe("abcde");
+  });
+
+  it("maps KugooID and t to userid and token", () => {
+    const map = parseKugouCookie("KugooID=626846405; t=mytoken123; UserName=testuser");
+    expect(map.userid).toBe("626846405");
+    expect(map.token).toBe("mytoken123");
+    expect(map.nickname).toBe("testuser");
+  });
+
+  it("extracts subparameters from KuGoo cookie field", () => {
+    const raw = "KuGoo=KugooID=987654&t=tokenfromsub&NickName=subnick; dfid=dev1";
+    const map = parseKugouCookie(raw);
+    expect(map.userid).toBe("987654");
+    expect(map.token).toBe("tokenfromsub");
+    expect(map.nickname).toBe("subnick");
+    expect(map.dfid).toBe("dev1");
+  });
+
+  it("handles empty or malformed strings gracefully", () => {
+    expect(parseKugouCookie("")).toEqual({});
+    expect(parseKugouCookie("invalid; ; =value; key=")).toEqual({ key: "" });
   });
 });
