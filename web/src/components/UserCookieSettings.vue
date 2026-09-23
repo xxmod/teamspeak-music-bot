@@ -5,7 +5,7 @@
       个人音乐凭据
     </h2>
     <p class="section-desc">
-      配置各平台的个人音乐凭据。配置后，音乐库中的个人歌单（含 B 站收藏夹）、发现页每日推荐以及酷狗/网易云私人电台将优先基于您的个人口味个性化加载，各用户独立存储，绝不污染机器人全局账号。
+      配置各平台的个人音乐凭据。配置后，音乐库中的个人歌单收藏夹、发现页每日推荐以及酷狗/网易云私人电台将使用此Cookie。
     </p>
 
     <div v-if="loading" class="qr-loading">
@@ -13,8 +13,13 @@
       加载凭据信息中...
     </div>
 
+    <div v-else-if="visiblePlatforms.length === 0" class="empty-platforms">
+      <Icon icon="mdi:information-outline" class="empty-icon" />
+      <span>当前服务端配置未启用任何支持个人凭据的音乐平台</span>
+    </div>
+
     <div v-else class="account-cards-list">
-      <div v-for="p in PLATFORMS" :key="p.id" class="account-card">
+      <div v-for="p in visiblePlatforms" :key="p.id" class="account-card">
         <div class="account-header">
           <Icon :icon="p.icon" class="account-icon" :class="p.iconClass" />
           <div class="account-info">
@@ -106,7 +111,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, onUnmounted } from 'vue';
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue';
 import { Icon } from '@iconify/vue';
 import axios from 'axios';
 import QRCode from 'qrcode';
@@ -169,6 +174,19 @@ interface QrState {
 const store = usePlayerStore();
 const loading = ref(true);
 
+const serverEnabledPlatforms = ref<string[]>([]);
+const visiblePlatforms = computed(() => {
+  return PLATFORMS.filter((p) => {
+    if (store.enabledProviders.length > 0) {
+      return store.enabledProviders.includes(p.id);
+    }
+    if (serverEnabledPlatforms.value.length > 0) {
+      return serverEnabledPlatforms.value.includes(p.id);
+    }
+    return true;
+  });
+});
+
 const cookiesData = reactive<Record<string, { configured: boolean; updatedAt: number }>>({});
 const activeMode = reactive<Record<string, 'none' | 'qr' | 'cookie'>>({
   netease: 'none',
@@ -201,6 +219,9 @@ async function fetchCookies() {
     const data = res.data?.cookies || res.data;
     if (data && typeof data === 'object') {
       Object.assign(cookiesData, data);
+    }
+    if (Array.isArray(res.data?.enabledPlatforms)) {
+      serverEnabledPlatforms.value = res.data.enabledPlatforms;
     }
   } catch {
     // ignore
@@ -342,6 +363,9 @@ async function deleteCookie(platform: string) {
 }
 
 onMounted(async () => {
+  if (store.enabledProviders.length === 0) {
+    await store.fetchProviders();
+  }
   await fetchCookies();
   loading.value = false;
 });
@@ -356,6 +380,24 @@ onUnmounted(() => {
 <style lang="scss" scoped>
 .user-cookie-settings {
   margin-bottom: 24px;
+}
+
+.empty-platforms {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 20px;
+  background: var(--hover-bg);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 13px;
+  margin-bottom: 20px;
+
+  .empty-icon {
+    font-size: 18px;
+    color: var(--color-primary);
+    flex-shrink: 0;
+  }
 }
 
 .section-title {

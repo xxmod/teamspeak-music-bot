@@ -2,6 +2,8 @@ import { Router } from "express";
 import type { MusicProvider } from "../../music/provider.js";
 import type { BotDatabase } from "../../data/database.js";
 import type { Logger } from "../../logger.js";
+import type { BotConfig } from "../../data/config.js";
+import { isProviderEnabled } from "../../data/config.js";
 import { requireNotGuest } from "../middleware/requireNotGuest.js";
 
 export const SUPPORTED_PLATFORMS = ["netease", "qq", "kugou", "bilibili"] as const;
@@ -15,11 +17,18 @@ export function createUserCookiesRouter(
     bilibili: MusicProvider;
     kugou?: MusicProvider;
   },
-  logger: Logger
+  logger: Logger,
+  config?: BotConfig
 ): Router {
   const router = Router();
 
+  function isPlatformEnabled(platform: string): boolean {
+    if (!config) return true;
+    return isProviderEnabled(config, platform);
+  }
+
   function getProvider(platform: string): MusicProvider | undefined {
+    if (!isPlatformEnabled(platform)) return undefined;
     if (platform === "netease") return providers.netease;
     if (platform === "qq") return providers.qq;
     if (platform === "bilibili") return providers.bilibili;
@@ -44,7 +53,8 @@ export function createUserCookiesRouter(
       kugou: { configured: status.kugou?.configured ?? false, updatedAt: status.kugou?.updatedAt },
       bilibili: { configured: status.bilibili?.configured ?? false, updatedAt: status.bilibili?.updatedAt },
     };
-    res.json({ cookies: result, ...result });
+    const enabledPlatforms = SUPPORTED_PLATFORMS.filter((p) => isPlatformEnabled(p));
+    res.json({ cookies: result, enabledPlatforms, ...result });
   });
 
   // POST / - Save or update user cookie for a platform
@@ -57,6 +67,10 @@ export function createUserCookiesRouter(
     const { platform, cookie } = req.body;
     if (!platform || !SUPPORTED_PLATFORMS.includes(platform as SupportedPlatform)) {
       res.status(400).json({ error: `Unsupported platform. Supported: ${SUPPORTED_PLATFORMS.join(", ")}` });
+      return;
+    }
+    if (!isPlatformEnabled(platform)) {
+      res.status(400).json({ error: `平台未在服务端配置中启用：${platform} (provider disabled)` });
       return;
     }
     if (!cookie || typeof cookie !== "string" || !cookie.trim()) {
@@ -100,6 +114,14 @@ export function createUserCookiesRouter(
   router.post("/qrcode", async (req, res) => {
     try {
       const { platform } = req.body;
+      if (!platform || !SUPPORTED_PLATFORMS.includes(platform as SupportedPlatform)) {
+        res.status(400).json({ error: "Invalid platform" });
+        return;
+      }
+      if (!isPlatformEnabled(platform)) {
+        res.status(400).json({ error: `平台未在服务端配置中启用：${platform} (provider disabled)` });
+        return;
+      }
       const provider = getProvider(platform);
       if (!provider) {
         res.status(400).json({ error: "Provider not available for this platform" });
@@ -128,6 +150,10 @@ export function createUserCookiesRouter(
       }
       if (!platform || typeof platform !== "string" || !SUPPORTED_PLATFORMS.includes(platform as SupportedPlatform)) {
         res.status(400).json({ error: "platform is required" });
+        return;
+      }
+      if (!isPlatformEnabled(platform)) {
+        res.status(400).json({ error: `平台未在服务端配置中启用：${platform} (provider disabled)` });
         return;
       }
       const provider = getProvider(platform);

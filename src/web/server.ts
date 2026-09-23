@@ -179,7 +179,8 @@ export function createWebServer(options: WebServerOptions): WebServer {
         bilibili: options.bilibiliProvider,
         kugou: options.kugouProvider,
       },
-      logger
+      logger,
+      options.config
     )
   );
   app.use("/api/player", createPlayerRouter(
