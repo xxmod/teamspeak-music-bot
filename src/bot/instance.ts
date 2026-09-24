@@ -1146,21 +1146,30 @@ export class BotInstance extends EventEmitter {
         return cached.gainDb;
       }
       const targetLufs = this.config.audioNormalization?.targetLufs ?? -16;
-      const analysis = await analyzeAudioLoudness(url, {
-        targetLufs,
-        timeoutMs: 6000,
-        logger: this.logger,
-      });
-      if (analysis) {
-        this.database.saveSongLoudness(
-          song.platform,
-          song.id,
-          analysis.integratedLoudness,
-          analysis.truePeak,
-          analysis.gainDb,
-        );
-        return analysis.gainDb;
-      }
+      (async () => {
+        try {
+          const analysis = await analyzeAudioLoudness(url, {
+            targetLufs,
+            timeoutMs: 12000,
+            logger: this.logger,
+          });
+          if (analysis) {
+            this.database.saveSongLoudness(
+              song.platform,
+              song.id,
+              analysis.integratedLoudness,
+              analysis.truePeak,
+              analysis.gainDb,
+            );
+            this.logger.debug(
+              { songId: song.id, platform: song.platform, gainDb: analysis.gainDb },
+              "Background loudness analysis completed for current track",
+            );
+          }
+        } catch (err) {
+          this.logger.debug({ err, songId: song.id }, "Background loudness analysis failed");
+        }
+      })().catch(() => {});
     } catch (err) {
       this.logger.warn({ err, songId: song.id }, "Failed to analyze song loudness — falling back to 0 dB");
     }
@@ -1713,7 +1722,21 @@ export class BotInstance extends EventEmitter {
     if (!provider.getPersonalFm) {
       return `Personal FM is not available for ${provider.platform}`;
     }
-    const songs = await provider.getPersonalFm(cookieOverride);
+    let songs: Song[] = [];
+    try {
+      songs = await provider.getPersonalFm(cookieOverride);
+    } catch {
+      // fall back below
+    }
+    // 若个人 cookie 拉取结果为空，且指定了 cookieOverride，自动降级回退到全局账号 cookie
+    if (songs.length === 0 && cookieOverride) {
+      this.logger.info("Personal cookie returned no FM songs, falling back to global account");
+      try {
+        songs = await provider.getPersonalFm();
+      } catch {
+        // ignore
+      }
+    }
     if (songs.length === 0)
       return "No FM songs available (need to login first)";
 
@@ -1729,12 +1752,39 @@ export class BotInstance extends EventEmitter {
     this.fmCookieOverride = cookieOverride;
     this.player.resetFailures();
 
-    const first = this.queue.play();
-    if (first) await this.resolveAndPlay(first);
+    let currentTrack = this.queue.play();
+    let started = false;
+    const maxAttempts = 6;
+    for (let attempt = 0; attempt < maxAttempts && this.connected; attempt++) {
+      if (!currentTrack) {
+        await this.refillFm();
+        currentTrack = this.queue.next();
+        if (!currentTrack) break;
+      }
+      started = await this.resolveAndPlay(currentTrack);
+      if (started) break;
+      this.logger.info(
+        { songId: currentTrack.id, name: currentTrack.name, attempt },
+        "FM song unplayable (VIP/copyright), skipping to next",
+      );
+      currentTrack = this.queue.next();
+    }
+
     this.sweepLocalAudio("queue_replaced");
     this.emit("stateChange");
+
     const label = provider.platform === "qq" ? "QQ Radar FM" : "Personal FM";
-    return `${label} started: ${first?.name ?? "unknown"} - ${first?.artist ?? ""}`;
+    if (!started || !currentTrack) {
+      this.disableFmMode();
+      this.player.stop();
+      return `Failed to start ${label}: all recommended songs are unavailable or require VIP`;
+    }
+
+    if (this.queue.unplayedCount() <= 3) {
+      this.refillFm().catch((err) => this.logger.error({ err }, "Proactive FM refill failed"));
+    }
+
+    return `${label} started: ${currentTrack.name} - ${currentTrack.artist}`;
   }
 
   private async cmdArtist(cmd: ParsedCommand, requesterName?: string): Promise<string> {
@@ -1774,7 +1824,19 @@ export class BotInstance extends EventEmitter {
     const provider = this.fmProvider;
     if (!this.isFmMode || !provider?.getPersonalFm) return;
     try {
-      const songs = await provider.getPersonalFm(this.fmCookieOverride);
+      let songs: Song[] = [];
+      try {
+        songs = await provider.getPersonalFm(this.fmCookieOverride);
+      } catch {
+        // fall back below
+      }
+      if (songs.length === 0 && this.fmCookieOverride) {
+        try {
+          songs = await provider.getPersonalFm();
+        } catch {
+          // ignore
+        }
+      }
       if (songs.length === 0) return;
       for (const song of songs) {
         this.queue.add(this.withRequester({ ...song, platform: provider.platform }, this.fmRequesterName));
@@ -2003,12 +2065,18 @@ export class BotInstance extends EventEmitter {
     let started = false;
     try {
       this.voteSkipUsers.clear();
+      // 在 FM 模式下保障至少 6 轮跳过重试（支持跨批次 refill），确保连续受限曲目能被自动跳过
+      const effectiveRetries = this.isFmMode ? Math.max(maxRetries, 6) : maxRetries;
       const next = this.queue.next();
       if (next) {
         started = await this.resolveAndPlay(next);
         if (!started) {
-          for (let i = 0; i < maxRetries && this.connected; i++) {
-            const retry = this.queue.next();
+          for (let i = 0; i < effectiveRetries && this.connected; i++) {
+            let retry = this.queue.next();
+            if (!retry && this.isFmMode) {
+              await this.refillFm();
+              retry = this.queue.next();
+            }
             if (!retry) break;
             if (await this.resolveAndPlay(retry)) {
               started = true;
@@ -2027,13 +2095,19 @@ export class BotInstance extends EventEmitter {
         // Queue exhausted — in FM Random mode, refill and continue
         if (this.isFmMode) {
           await this.refillFm();
-          const refillNext = this.queue.next();
-          if (refillNext) {
-            started = await this.resolveAndPlay(refillNext);
+          for (let i = 0; i <= effectiveRetries && this.connected; i++) {
+            const refillNext = this.queue.next();
+            if (!refillNext) break;
+            if (await this.resolveAndPlay(refillNext)) {
+              started = true;
+              break;
+            }
           }
           if (!started) {
             this.player.stop();
             this.profileManager.onSongChange(null).catch(() => {});
+          } else if (this.queue.unplayedCount() <= 3) {
+            this.refillFm().catch((err) => this.logger.error({ err }, "Proactive FM refill failed"));
           }
         } else {
           // Queue exhausted on a non-FM source (skip-past-end or natural

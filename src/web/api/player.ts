@@ -137,7 +137,8 @@ export function createPlayerRouter(
         ok:
           !message.startsWith("No FM songs") &&
           !message.includes("not available") &&
-          !message.includes("not connected"),
+          !message.includes("not connected") &&
+          !message.startsWith("Failed to start"),
         message,
       });
     } catch (err) {

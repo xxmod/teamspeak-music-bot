@@ -157,7 +157,7 @@ export const usePlayerStore = defineStore('player', {
 
     // Transient notification for surfacing failures (e.g., "song not playable")
     // to a global Toast. Bumped `id` triggers re-render of the same message.
-    notification: null as { id: number; message: string; type: 'error' | 'info' } | null,
+    notification: null as { id: number; message: string; type: 'error' | 'info' | 'success' } | null,
 
     // Bilibili 多P分P选择弹窗状态
     biliPartModal: {
@@ -441,7 +441,7 @@ export const usePlayerStore = defineStore('player', {
       this._syncAfterAction();
     },
 
-    notify(message: string, type: 'error' | 'info' = 'info') {
+    notify(message: string, type: 'error' | 'info' | 'success' = 'info') {
       this.notification = { id: Date.now(), message, type };
     },
 
@@ -513,15 +513,22 @@ export const usePlayerStore = defineStore('player', {
         const handled = await this.checkBilibiliMultiPart(song, 'play');
         if (handled) return;
       }
+      this.notify(`正在加载并播放：${song.name} - ${song.artist}`, 'info');
       // Guests use the non-destructive "play now" (insert-next + skip) so they
       // can't wipe everyone else's queue; members/admins keep the normal behavior.
       const endpoint = useSession().isGuest.value ? 'play-now-song' : 'play-song';
-      const res = await axios.post(`/api/player/${this.activeBotId}/${endpoint}`, { song });
-      if (res.data?.ok === false && res.data?.message) {
-        this.notify(res.data.message, 'error');
+      try {
+        const res = await axios.post(`/api/player/${this.activeBotId}/${endpoint}`, { song });
+        if (res.data?.ok === false && res.data?.message) {
+          this.notify(res.data.message, 'error');
+        } else {
+          this.notify(`正在播放：${song.name} - ${song.artist}`, 'success');
+        }
+        this._setTiming(this.activeBotId, { serverElapsed: 0 });
+        this._syncAfterAction();
+      } catch (err: any) {
+        this.notify(`播放失败: ${err.response?.data?.error || err.message}`, 'error');
       }
-      this._setTiming(this.activeBotId, { serverElapsed: 0 });
-      this._syncAfterAction();
     },
 
     async playNextSong(song: Song, skipPartCheck = false) {
@@ -559,10 +566,11 @@ export const usePlayerStore = defineStore('player', {
 
     async playPlaylist(playlistId: string, platform = 'netease') {
       if (!this.activeBotId) return;
+      this.notify('正在加载并播放歌单...', 'info');
       try {
         const res = await axios.post(`/api/player/${this.activeBotId}/play-playlist`, { playlistId, platform });
         if (res.data?.message) {
-          this.notify(res.data.message, res.data.ok === false ? 'error' : 'info');
+          this.notify(res.data.message, res.data.ok === false ? 'error' : 'success');
         }
         this._setTiming(this.activeBotId, { serverElapsed: 0 });
         this._syncAfterAction();
@@ -575,10 +583,11 @@ export const usePlayerStore = defineStore('player', {
 
     async playAlbum(albumId: string, platform = 'netease') {
       if (!this.activeBotId) return;
+      this.notify('正在加载并播放专辑...', 'info');
       try {
         const res = await axios.post(`/api/player/${this.activeBotId}/play-album`, { albumId, platform });
         if (res.data?.message) {
-          this.notify(res.data.message, res.data.ok === false ? 'error' : 'info');
+          this.notify(res.data.message, res.data.ok === false ? 'error' : 'success');
         }
         this._setTiming(this.activeBotId, { serverElapsed: 0 });
         this._syncAfterAction();
@@ -655,13 +664,26 @@ export const usePlayerStore = defineStore('player', {
 
     async startFm(platform: Source = 'netease') {
       if (!this.activeBotId) return;
-      const res = await axios.post(`/api/player/${this.activeBotId}/fm`, { platform });
-      if (res.data?.message) {
-        this.notify(res.data.message, res.data.ok === false ? 'error' : 'info');
+      const platformLabels: Record<string, string> = {
+        netease: '网易云私人 FM',
+        qq: 'QQ 音乐雷达',
+        kugou: '酷狗私人电台',
+        jellyfin: 'Jellyfin 即时漫游',
+      };
+      const label = platformLabels[platform] || '私人 FM';
+      this.notify(`正在开启 ${label}，正在获取推荐曲目...`, 'info');
+      try {
+        const res = await axios.post(`/api/player/${this.activeBotId}/fm`, { platform });
+        if (res.data?.message) {
+          const isError = res.data.ok === false;
+          this.notify(res.data.message, isError ? 'error' : 'success');
+        }
+        this._setTiming(this.activeBotId, { serverElapsed: 0 });
+        this._syncAfterAction();
+        this.fetchQueue();
+      } catch (err: any) {
+        this.notify(`开启 ${label} 失败: ${err.response?.data?.error || err.message}`, 'error');
       }
-      this._setTiming(this.activeBotId, { serverElapsed: 0 });
-      this._syncAfterAction();
-      this.fetchQueue();
     },
 
     async fetchFavorites() {

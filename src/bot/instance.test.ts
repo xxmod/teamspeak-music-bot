@@ -663,6 +663,27 @@ describe("BotInstance.resolveAndPlay — Spotify routing (C4)", () => {
     expect(player.play).toHaveBeenCalledWith("http://cdn/track1.mp3", 0, 180, 4.0);
   });
 
+  it("plays immediately with 0 dB without blocking when loudness cache is missing (fast start)", async () => {
+    const controller = makeController();
+    const player = makePlayer();
+    const song = { id: "track2", platform: "netease", duration: 180, name: "Uncached Track" } as any;
+    const ctx = makeResolveCtx({
+      controller, player, url: "http://cdn/track2.mp3",
+    });
+    ctx.config = { audioNormalization: { enabled: true, targetLufs: -16 } };
+    ctx.database.getSongLoudness = vi.fn(() => null);
+
+    const startTime = Date.now();
+    const ok = await resolveAndPlay.call(ctx, song);
+    const elapsed = Date.now() - startTime;
+
+    expect(ok).toBe(true);
+    // 立即以默认 0 dB 快速起播，无需等待分析
+    expect(player.play).toHaveBeenCalledWith("http://cdn/track2.mp3", 0, 180);
+    // 毫秒级返回
+    expect(elapsed).toBeLessThan(1000);
+  });
+
   // R3-3: spotify A playing → pause → skip to spotify B. The persistent PCM
   // stream stays attached through the pause, so the re-attach gate skips
   // playPcmStream (which is what sets state='playing'). Without an explicit
@@ -1615,6 +1636,175 @@ describe("BotInstance Bilibili multi-P resolution", () => {
     expect(res.song.id).toBe("BV1multiP?p=1");
     expect(res.song.name).toBe("测试视频 - P1 分P1");
     expect(res.song.duration).toBe(100);
+  });
+});
+
+describe("BotInstance.startFm and FM mode error resilience", () => {
+  function makeMockSong(id: string, name: string) {
+    return {
+      id,
+      name,
+      artist: "Artist",
+      album: "Album",
+      platform: "netease" as const,
+      coverUrl: "",
+      duration: 180,
+    };
+  }
+
+  function createFmContext(options: {
+    getPersonalFm: () => Promise<any[]>;
+    resolveAndPlay: (song: any) => Promise<boolean>;
+  }) {
+    const queue = new PlayQueue();
+    const provider = {
+      platform: "netease" as const,
+      getPersonalFm: vi.fn(options.getPersonalFm),
+    };
+    const ctx: any = {
+      connected: true,
+      neteaseProvider: provider,
+      queue,
+      isFmMode: false,
+      fmProvider: null,
+      fmRequesterName: undefined,
+      fmCookieOverride: undefined,
+      player: {
+        stop: vi.fn(),
+        resetFailures: vi.fn(),
+      },
+      profileManager: {
+        onSongChange: vi.fn(async () => {}),
+      },
+      logger: {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+      },
+      sweepLocalAudio: vi.fn(),
+      emit: vi.fn(),
+      withRequester: (song: any, requesterName?: string) =>
+        requesterName ? { ...song, requestedBy: requesterName } : song,
+      disableFmMode: function () {
+        this.isFmMode = false;
+        this.fmProvider = null;
+        this.fmRequesterName = undefined;
+        this.fmCookieOverride = undefined;
+      },
+      refillFm: (BotInstance.prototype as any).refillFm,
+      startFm: (BotInstance.prototype as any).startFm,
+      playNext: (BotInstance.prototype as any).playNext,
+      resolveAndPlay: vi.fn(options.resolveAndPlay),
+      isAdvancing: false,
+      voteSkipUsers: new Set(),
+    };
+    return { ctx, provider, queue };
+  }
+
+  it("plays the first song immediately when playable", async () => {
+    const s1 = makeMockSong("1", "Song 1");
+    const s2 = makeMockSong("2", "Song 2");
+    const { ctx } = createFmContext({
+      getPersonalFm: async () => [s1, s2],
+      resolveAndPlay: async () => true,
+    });
+
+    const msg = await ctx.startFm(ctx.neteaseProvider);
+    expect(msg).toContain("Personal FM started: Song 1");
+    expect(ctx.isFmMode).toBe(true);
+    expect(ctx.resolveAndPlay).toHaveBeenCalledWith(expect.objectContaining({ id: "1" }));
+  });
+
+  it("skips unplayable first song and plays the second song", async () => {
+    const s1 = makeMockSong("1", "Song 1 VIP");
+    const s2 = makeMockSong("2", "Song 2 Free");
+    const { ctx } = createFmContext({
+      getPersonalFm: async () => [s1, s2],
+      resolveAndPlay: async (song) => song.id === "2",
+    });
+
+    const msg = await ctx.startFm(ctx.neteaseProvider);
+    expect(msg).toContain("Personal FM started: Song 2 Free");
+    expect(ctx.isFmMode).toBe(true);
+    expect(ctx.resolveAndPlay).toHaveBeenCalledTimes(2);
+  });
+
+  it("refills FM when first batch is all unplayable, and plays playable song from second batch", async () => {
+    const batch1 = [makeMockSong("1", "VIP 1"), makeMockSong("2", "VIP 2")];
+    const batch2 = [makeMockSong("3", "Free 3")];
+    let callCount = 0;
+    const { ctx } = createFmContext({
+      getPersonalFm: async () => {
+        callCount++;
+        return callCount === 1 ? batch1 : batch2;
+      },
+      resolveAndPlay: async (song) => song.id === "3",
+    });
+
+    const msg = await ctx.startFm(ctx.neteaseProvider);
+    expect(msg).toContain("Personal FM started: Free 3");
+    expect(ctx.isFmMode).toBe(true);
+    expect(callCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it("fails gracefully and stops player when all retries are unplayable", async () => {
+    const { ctx } = createFmContext({
+      getPersonalFm: async () => [makeMockSong("1", "VIP 1"), makeMockSong("2", "VIP 2")],
+      resolveAndPlay: async () => false,
+    });
+
+    const msg = await ctx.startFm(ctx.neteaseProvider);
+    expect(msg).toContain("Failed to start Personal FM");
+    expect(ctx.isFmMode).toBe(false);
+    expect(ctx.player.stop).toHaveBeenCalled();
+  });
+  it("falls back to global cookie when user personal cookie returns empty FM songs", async () => {
+    const globalSongs = [makeMockSong("global-1", "Global Fallback Song")];
+    const { ctx, provider } = createFmContext({
+      getPersonalFm: async (cookie?: string) => {
+        if (cookie === "personal_cookie") return [];
+        return globalSongs;
+      },
+      resolveAndPlay: async () => true,
+    });
+
+    const msg = await ctx.startFm(provider, "User", "personal_cookie");
+    expect(msg).toContain("Personal FM started: Global Fallback Song");
+    expect(ctx.isFmMode).toBe(true);
+    expect(provider.getPersonalFm).toHaveBeenCalledWith("personal_cookie");
+    expect(provider.getPersonalFm).toHaveBeenCalledWith();
+  });
+
+  it("playNext retries up to 6 times in FM mode to skip unplayable songs", async () => {
+    let playedIds: string[] = [];
+    let callIdx = 0;
+    const { ctx } = createFmContext({
+      getPersonalFm: async () => {
+        callIdx++;
+        return [
+          makeMockSong(`b${callIdx}-1`, "VIP"),
+          makeMockSong(`b${callIdx}-2`, "VIP"),
+          makeMockSong(`b${callIdx}-3`, "VIP"),
+        ];
+      },
+      resolveAndPlay: async (song) => {
+        playedIds.push(song.id);
+        // Only song 5 is playable
+        return playedIds.length === 5;
+      },
+    });
+
+    // Seed FM mode with songs
+    ctx.isFmMode = true;
+    ctx.fmProvider = ctx.neteaseProvider;
+    ctx.queue.setMode("random");
+    ctx.queue.add(makeMockSong("s1", "Unplayable 1"));
+    ctx.queue.add(makeMockSong("s2", "Unplayable 2"));
+
+    const ok = await ctx.playNext(3); // even if passed default 3, in FM mode it allows 6 retries
+    expect(ok).toBe(true);
+    expect(playedIds.length).toBe(5);
   });
 });
 

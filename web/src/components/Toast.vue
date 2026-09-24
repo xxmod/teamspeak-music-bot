@@ -1,7 +1,10 @@
 <template>
   <Transition name="toast">
     <div v-if="visible && current" class="toast" :class="`toast--${current.type}`">
-      <Icon :icon="current.type === 'error' ? 'mdi:alert-circle' : 'mdi:information'" class="toast-icon" />
+      <Icon
+        :icon="current.type === 'error' ? 'mdi:alert-circle' : current.type === 'success' ? 'mdi:check-circle' : 'mdi:information'"
+        class="toast-icon"
+      />
       <span class="toast-msg">{{ current.message }}</span>
       <button class="toast-close" @click="visible = false" aria-label="关闭">
         <Icon icon="mdi:close" />
@@ -17,7 +20,7 @@ import { usePlayerStore } from '../stores/player.js';
 
 const store = usePlayerStore();
 const visible = ref(false);
-const current = ref<{ id: number; message: string; type: 'error' | 'info' } | null>(null);
+const current = ref<{ id: number; message: string; type: 'error' | 'info' | 'success' } | null>(null);
 let timer: ReturnType<typeof setTimeout> | null = null;
 
 watch(
@@ -71,6 +74,11 @@ onUnmounted(() => {
 .toast--info {
   border-color: var(--color-primary);
   .toast-icon { color: var(--color-primary); }
+}
+
+.toast--success {
+  border-color: #10b981;
+  .toast-icon { color: #10b981; }
 }
 
 .toast-icon {
