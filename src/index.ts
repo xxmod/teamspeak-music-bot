@@ -76,6 +76,7 @@ async function main() {
 
   const neteaseProvider = new NeteaseProvider(apiServer.getNeteaseBaseUrl());
   const qqProvider = new QQMusicProvider(apiServer.getQQMusicBaseUrl());
+  qqProvider.setLogger(logger.child({ provider: "qq" }));
   const bilibiliProvider = new BiliBiliProvider();
   const localProvider = new LocalMusicProvider(LOCAL_AUDIO_DIR);
   const kugouProvider = new KugouProvider();

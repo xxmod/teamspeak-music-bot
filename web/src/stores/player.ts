@@ -63,6 +63,7 @@ export interface PlaylistItem {
   coverUrl: string;
   songCount: number;
   platform: string;
+  editable?: boolean;
 }
 
 export interface FavoritePlaylist {

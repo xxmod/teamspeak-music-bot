@@ -400,6 +400,7 @@ export function mapKugouPlaylist(raw: KugouRawPlaylist): Playlist {
     coverUrl: fixCover(firstStr(raw.pic, raw.imgurl, raw.flexible_cover, raw.cover, raw.img)),
     songCount: Number(raw.count ?? raw.songcount ?? raw.song_count ?? raw.total ?? 0) || 0,
     platform: "kugou",
+    editable: raw.type !== undefined ? (raw.type !== 1 && raw.type !== "1") : undefined,
   };
 }
 
@@ -1085,6 +1086,145 @@ export class KugouProvider implements MusicProvider {
       return decodeURIComponent(raw);
     } catch {
       return raw;
+    }
+  }
+
+  async likeSong(songId: string, like = true, cookieOverride?: string): Promise<boolean> {
+    // For Kugou:
+    // 1. is_def === 2 or name === "我喜欢" (standard favorite playlist in modern Kugou app, listid: 2)
+    // 2. is_def === 1 or name === "默认收藏" (legacy default collection, listid: 1)
+    let targetListId = 2;
+    try {
+      const cookie = cookieOverride !== undefined ? parseKugouCookie(cookieOverride) : this.cookie;
+      const userid = cookie.userid || "0";
+      const token = cookie.token || "";
+      if (userid && userid !== "0" && token) {
+        const raw = await this.request({
+          method: "POST",
+          url: "/v7/get_all_list",
+          xRouter: "cloudlist.service.kugou.com",
+          encryptType: "android",
+          params: { plat: 1, userid: Number(userid), token },
+          data: { userid: Number(userid), token, total_ver: 979, type: 2, page: 1, pagesize: 20 },
+          extraHeaders: cookieOverride ? { Cookie: cookieOverride } : undefined,
+        });
+        const list = raw?.data?.info ?? raw?.data?.list ?? [];
+        if (Array.isArray(list) && list.length > 0) {
+          const fav =
+            list.find((p: any) => p.is_def === 2 || p.name === "我喜欢") ||
+            list.find((p: any) => p.is_def === 1 || p.name === "默认收藏") ||
+            list[0];
+          if (fav?.listid) targetListId = Number(fav.listid);
+        }
+      }
+    } catch {
+      // fallback to 2
+    }
+    return this.addSongToPlaylist(String(targetListId), songId, cookieOverride);
+  }
+
+  async addSongToPlaylist(playlistId: string, songId: string, cookieOverride?: string): Promise<boolean> {
+    try {
+      const cookie = cookieOverride !== undefined ? parseKugouCookie(cookieOverride) : this.cookie;
+      const userid = cookie.userid || "0";
+      const token = cookie.token || "";
+      if (!userid || userid === "0" || !token) return false;
+
+      const { hash, albumAudioId, albumId } = parseId(songId);
+      const pureHash = (hash || songId.split("|")[0] || "").toLowerCase();
+      if (!pureHash) return false;
+
+      let numericListId = Number(playlistId);
+      if (isNaN(numericListId) || playlistId.startsWith("collection_")) {
+        // Resolve collection_* to numeric listid
+        try {
+          const raw = await this.request({
+            method: "POST",
+            url: "/v7/get_all_list",
+            xRouter: "cloudlist.service.kugou.com",
+            encryptType: "android",
+            params: { plat: 1, userid: Number(userid), token },
+            data: { userid: Number(userid), token, total_ver: 979, type: 2, page: 1, pagesize: 30 },
+            extraHeaders: cookieOverride ? { Cookie: cookieOverride } : undefined,
+          });
+          const list = raw?.data?.info ?? raw?.data?.list ?? [];
+          if (Array.isArray(list)) {
+            const found = list.find((p: any) => String(p.global_collection_id || p.gid) === playlistId);
+            if (found?.listid) {
+              numericListId = Number(found.listid);
+            }
+          }
+        } catch {
+          // ignore lookup error
+        }
+      }
+
+      if (isNaN(numericListId) || numericListId <= 0) {
+        numericListId = 1; // Fallback to default collection
+      }
+
+      // Try /cloudlist.service/v6/add_song (standard gateway endpoint)
+      try {
+        const v6Res = await this.request({
+          method: "POST",
+          baseURL: "https://gateway.kugou.com",
+          url: "/cloudlist.service/v6/add_song",
+          encryptType: "android",
+          params: {
+            last_time: 0,
+            last_area: "gztx",
+            userid: Number(userid),
+            token,
+          },
+          data: {
+            userid: Number(userid),
+            token,
+            listid: numericListId,
+            list_ver: 0,
+            type: 0,
+            slow_upload: 1,
+            scene: "false;null",
+            data: [
+              {
+                number: 1,
+                name: "歌曲",
+                hash: pureHash,
+                album_id: Number(albumId) || 0,
+                mixsongid: Number(albumAudioId) || 0,
+                size: 0,
+                sort: 0,
+                timelen: 0,
+                bitrate: 0,
+              },
+            ],
+          },
+          extraHeaders: cookieOverride ? { Cookie: cookieOverride } : undefined,
+        });
+        if (v6Res?.status === 1 || v6Res?.error_code === 0) {
+          return true;
+        }
+      } catch {
+        // fallback to /v7/add_song
+      }
+
+      // Fallback: /v7/add_song
+      const data = await this.request({
+        method: "POST",
+        url: "/v7/add_song",
+        xRouter: "cloudlist.service.kugou.com",
+        encryptType: "android",
+        params: { plat: 1, userid: Number(userid), token },
+        data: {
+          userid: Number(userid),
+          token,
+          listid: numericListId,
+          data: [{ hash: pureHash }],
+        },
+        extraHeaders: cookieOverride ? { Cookie: cookieOverride } : undefined,
+      });
+      return data?.status === 1 || data?.err_code === 0 || data?.error_code === 0;
+    } catch {
+      return false;
     }
   }
 }

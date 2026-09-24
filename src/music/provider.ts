@@ -40,6 +40,7 @@ export interface Playlist {
   coverUrl: string;
   songCount: number;
   platform: Platform;
+  editable?: boolean;
 }
 
 export interface PlaylistDetail {
@@ -111,5 +112,7 @@ export interface MusicProvider {
   checkQrCodeForCookie?(
     key: string
   ): Promise<{ status: "waiting" | "scanned" | "confirmed" | "expired"; cookie?: string }>;
+  likeSong?(songId: string, like: boolean, cookieOverride?: string): Promise<boolean>;
+  addSongToPlaylist?(playlistId: string, songId: string, cookieOverride?: string): Promise<boolean>;
 }
 

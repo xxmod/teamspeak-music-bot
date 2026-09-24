@@ -357,6 +357,94 @@ export function createMusicRouter(
     }
   });
 
+  router.post("/song/like", requireNotGuest, async (req, res) => {
+    try {
+      const { platform, songId, like } = req.body ?? {};
+      if (!songId || typeof songId !== "string") {
+        res.status(400).json({ error: "songId is required" });
+        return;
+      }
+      const provider = resolveProvider(platform, res);
+      if (!provider) return;
+      if (!provider.likeSong) {
+        res.status(501).json({ error: `Not supported by provider: ${provider.platform}` });
+        return;
+      }
+      const userCookie = getUserCookieForPlatform(req, provider.platform);
+      const isLike = like !== false;
+      logger.info(
+        { platform: provider.platform, songId, isLike, userId: req.user?.id, hasUserCookie: Boolean(userCookie) },
+        "Processing song like request"
+      );
+      const success = await provider.likeSong(songId, isLike, userCookie);
+      if (success) {
+        logger.info(
+          { platform: provider.platform, songId, isLike, userId: req.user?.id },
+          "Song like operation succeeded"
+        );
+        res.json({ success: true, message: isLike ? "已添加到喜爱歌单" : "已从喜爱歌单移除" });
+      } else {
+        logger.warn(
+          { platform: provider.platform, songId, isLike, userId: req.user?.id },
+          "Provider rejected song like operation (check provider logs for upstream details)"
+        );
+        const errMsg = provider.platform === "qq"
+          ? "QQ音乐官方限制直接修改默认【我喜欢】歌单，建议使用【添加到歌单】存入您的自建歌单"
+          : "操作失败，平台未开放网页端写入权限或凭证已过期";
+        res.status(502).json({ error: errMsg });
+      }
+    } catch (err) {
+      logger.error({ err, platform: req.body?.platform, songId: req.body?.songId }, "Like song failed with error");
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  router.post("/playlist/add-song", requireNotGuest, async (req, res) => {
+    try {
+      const { platform, playlistId, songId } = req.body ?? {};
+      if (!playlistId || typeof playlistId !== "string") {
+        res.status(400).json({ error: "playlistId is required" });
+        return;
+      }
+      if (!songId || typeof songId !== "string") {
+        res.status(400).json({ error: "songId is required" });
+        return;
+      }
+      const provider = resolveProvider(platform, res);
+      if (!provider) return;
+      if (!provider.addSongToPlaylist) {
+        res.status(501).json({ error: `Not supported by provider: ${provider.platform}` });
+        return;
+      }
+      const userCookie = getUserCookieForPlatform(req, provider.platform);
+      logger.info(
+        { platform: provider.platform, playlistId, songId, userId: req.user?.id, hasUserCookie: Boolean(userCookie) },
+        "Processing add song to playlist request"
+      );
+      const success = await provider.addSongToPlaylist(playlistId, songId, userCookie);
+      if (success) {
+        logger.info(
+          { platform: provider.platform, playlistId, songId, userId: req.user?.id },
+          "Add song to playlist operation succeeded"
+        );
+        res.json({ success: true, message: "已成功添加到歌单" });
+      } else {
+        logger.warn(
+          { platform: provider.platform, playlistId, songId, userId: req.user?.id },
+          "Provider rejected add song to playlist operation (check provider logs for upstream details)"
+        );
+        const isFav = playlistId === "201" || playlistId === "3252653813";
+        const errMsg = (provider.platform === "qq" && isFav)
+          ? "QQ音乐官方限制直接修改默认【我喜欢】歌单，建议选择您的自建歌单添加"
+          : "添加失败，可能凭证已过期或无权限修改该歌单";
+        res.status(502).json({ error: errMsg });
+      }
+    } catch (err) {
+      logger.error({ err, platform: req.body?.platform, playlistId: req.body?.playlistId, songId: req.body?.songId }, "Add song to playlist failed with error");
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   router.get("/playlist/:id/detail", async (req, res) => {
     try {
       const provider = resolveProvider(req.query.platform, res);

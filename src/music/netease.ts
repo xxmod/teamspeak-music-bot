@@ -378,6 +378,23 @@ export class NeteaseProvider implements MusicProvider {
       coverUrl: p.coverImgUrl ?? "",
       songCount: p.trackCount ?? 0,
       platform: "netease",
+      editable: !p.subscribed,
     }));
+  }
+
+  async likeSong(songId: string, like = true, cookieOverride?: string): Promise<boolean> {
+    const params = this.getCookieParams(cookieOverride);
+    const res = await this.api.get("/like", {
+      params: { id: songId, like, ...params },
+    });
+    return res.data?.code === 200;
+  }
+
+  async addSongToPlaylist(playlistId: string, songId: string, cookieOverride?: string): Promise<boolean> {
+    const params = this.getCookieParams(cookieOverride);
+    const res = await this.api.get("/playlist/tracks", {
+      params: { op: "add", pid: playlistId, tracks: songId, ...params },
+    });
+    return res.data?.body?.code === 200 || res.data?.code === 200;
   }
 }
