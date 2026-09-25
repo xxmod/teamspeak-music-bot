@@ -34,10 +34,11 @@
           <div class="fm-title">Jellyfin 电台</div>
           <div class="fm-desc">{{ fmLoading === 'jellyfin' ? '正在连接播放器与获取推荐...' : '从收藏出发的 Instant Mix 歌曲流' }}</div>
         </div>
+        <div v-if="fmLoading === 'jellyfin'" class="fm-spinner" title="正在缓冲..."></div>
         <Icon
-          :icon="fmLoading === 'jellyfin' ? 'mdi:loading' : 'mdi:play-circle'"
+          v-else
+          icon="mdi:play-circle"
           class="fm-play-icon"
-          :class="{ 'icon-spin': fmLoading === 'jellyfin' }"
         />
       </div>
       <div
@@ -53,10 +54,11 @@
           <div class="fm-title">开启私人FM</div>
           <div class="fm-desc">{{ fmLoading === 'netease' ? '正在连接播放器与获取推荐...' : '根据你的口味推荐音乐' }}</div>
         </div>
+        <div v-if="fmLoading === 'netease'" class="fm-spinner" title="正在缓冲..."></div>
         <Icon
-          :icon="fmLoading === 'netease' ? 'mdi:loading' : 'mdi:play-circle'"
+          v-else
+          icon="mdi:play-circle"
           class="fm-play-icon"
-          :class="{ 'icon-spin': fmLoading === 'netease' }"
         />
       </div>
       <div
@@ -72,10 +74,11 @@
           <div class="fm-title">QQ音乐雷达</div>
           <div class="fm-desc">{{ fmLoading === 'qq' ? '正在连接播放器与获取推荐...' : '猜你喜欢 / 雷达推荐歌曲流' }}</div>
         </div>
+        <div v-if="fmLoading === 'qq'" class="fm-spinner" title="正在缓冲..."></div>
         <Icon
-          :icon="fmLoading === 'qq' ? 'mdi:loading' : 'mdi:play-circle'"
+          v-else
+          icon="mdi:play-circle"
           class="fm-play-icon"
-          :class="{ 'icon-spin': fmLoading === 'qq' }"
         />
       </div>
       <div
@@ -91,10 +94,11 @@
           <div class="fm-title">酷狗私人电台</div>
           <div class="fm-desc">{{ fmLoading === 'kugou' ? '正在连接播放器与获取推荐...' : '个性化推荐歌曲流' }}</div>
         </div>
+        <div v-if="fmLoading === 'kugou'" class="fm-spinner" title="正在缓冲..."></div>
         <Icon
-          :icon="fmLoading === 'kugou' ? 'mdi:loading' : 'mdi:play-circle'"
+          v-else
+          icon="mdi:play-circle"
           class="fm-play-icon"
-          :class="{ 'icon-spin': fmLoading === 'kugou' }"
         />
       </div>
     </section>
@@ -544,14 +548,22 @@ onMounted(() => {
   color: var(--color-primary);
   opacity: 0.8;
   transition: opacity var(--transition-fast);
+  flex-shrink: 0;
 
   .fm-card:hover & {
     opacity: 1;
   }
+}
 
-  &.icon-spin {
-    animation: icon-spin 1s linear infinite;
-  }
+.fm-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--color-primary-15, rgba(255, 255, 255, 0.2));
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: fm-spinner-rotate 0.8s linear infinite;
+  flex-shrink: 0;
+  margin-right: 4px;
 }
 
 .fm-card.is-loading {
@@ -560,7 +572,7 @@ onMounted(() => {
   pointer-events: none;
 }
 
-@keyframes icon-spin {
+@keyframes fm-spinner-rotate {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }

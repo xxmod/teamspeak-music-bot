@@ -259,6 +259,28 @@ export const usePlayerStore = defineStore('player', {
       return this.queues[botId] ?? [];
     },
 
+    /**
+     * 确保存在活跃的机器人 ID。
+     * 如果未设置，自动回退到第一个已有机器人；若列表为空，主动拉取一次。
+     */
+    async ensureActiveBot(): Promise<string | null> {
+      if (this.activeBotId) return this.activeBotId;
+      if (this.bots.length > 0) {
+        this.activeBotId = this.bots[0].id;
+        return this.activeBotId;
+      }
+      try {
+        await this.fetchBots();
+        if (this.bots.length > 0) {
+          this.activeBotId = this.activeBotId || this.bots[0].id;
+          return this.activeBotId;
+        }
+      } catch {
+        // ignore
+      }
+      return null;
+    },
+
     setActiveBotId(id: string) {
       // While scoped to a dedicated link, switching bots is blocked.
       if (this.scopedBotId !== null && id !== this.scopedBotId) return;
@@ -508,7 +530,11 @@ export const usePlayerStore = defineStore('player', {
     },
 
     async playSong(song: Song, skipPartCheck = false) {
-      if (!this.activeBotId) return;
+      const botId = await this.ensureActiveBot();
+      if (!botId) {
+        this.notify('未检测到可用的音乐机器人，请先确保机器人已启动并连接', 'error');
+        return;
+      }
       if (!skipPartCheck && song.platform === 'bilibili' && !song.id.includes('?p=')) {
         const handled = await this.checkBilibiliMultiPart(song, 'play');
         if (handled) return;
@@ -518,13 +544,13 @@ export const usePlayerStore = defineStore('player', {
       // can't wipe everyone else's queue; members/admins keep the normal behavior.
       const endpoint = useSession().isGuest.value ? 'play-now-song' : 'play-song';
       try {
-        const res = await axios.post(`/api/player/${this.activeBotId}/${endpoint}`, { song });
+        const res = await axios.post(`/api/player/${botId}/${endpoint}`, { song });
         if (res.data?.ok === false && res.data?.message) {
           this.notify(res.data.message, 'error');
         } else {
           this.notify(`正在播放：${song.name} - ${song.artist}`, 'success');
         }
-        this._setTiming(this.activeBotId, { serverElapsed: 0 });
+        this._setTiming(botId, { serverElapsed: 0 });
         this._syncAfterAction();
       } catch (err: any) {
         this.notify(`播放失败: ${err.response?.data?.error || err.message}`, 'error');
@@ -532,12 +558,16 @@ export const usePlayerStore = defineStore('player', {
     },
 
     async playNextSong(song: Song, skipPartCheck = false) {
-      if (!this.activeBotId) return;
+      const botId = await this.ensureActiveBot();
+      if (!botId) {
+        this.notify('未检测到可用的音乐机器人，请先确保机器人已启动并连接', 'error');
+        return;
+      }
       if (!skipPartCheck && song.platform === 'bilibili' && !song.id.includes('?p=')) {
         const handled = await this.checkBilibiliMultiPart(song, 'playNext');
         if (handled) return;
       }
-      const res = await axios.post(`/api/player/${this.activeBotId}/play-next-song`, { song });
+      const res = await axios.post(`/api/player/${botId}/play-next-song`, { song });
       if (res.data?.message) {
         this.notify(res.data.message, res.data.ok === false ? 'error' : 'info');
       }
@@ -546,33 +576,40 @@ export const usePlayerStore = defineStore('player', {
     },
 
     async addToQueue(query: string, platform = 'netease') {
-      if (!this.activeBotId) return;
-      await axios.post(`/api/player/${this.activeBotId}/add`, { query, platform });
+      const botId = await this.ensureActiveBot();
+      if (!botId) return;
+      await axios.post(`/api/player/${botId}/add`, { query, platform });
     },
 
     async addToQueueById(songId: string, platform = 'netease') {
-      if (!this.activeBotId) return;
-      await axios.post(`/api/player/${this.activeBotId}/add-by-id`, { songId, platform });
+      const botId = await this.ensureActiveBot();
+      if (!botId) return;
+      await axios.post(`/api/player/${botId}/add-by-id`, { songId, platform });
     },
 
     async addSong(song: Song, skipPartCheck = false) {
-      if (!this.activeBotId) return;
+      const botId = await this.ensureActiveBot();
+      if (!botId) return;
       if (!skipPartCheck && song.platform === 'bilibili' && !song.id.includes('?p=')) {
         const handled = await this.checkBilibiliMultiPart(song, 'add');
         if (handled) return;
       }
-      await axios.post(`/api/player/${this.activeBotId}/add-song`, { song });
+      await axios.post(`/api/player/${botId}/add-song`, { song });
     },
 
     async playPlaylist(playlistId: string, platform = 'netease') {
-      if (!this.activeBotId) return;
+      const botId = await this.ensureActiveBot();
+      if (!botId) {
+        this.notify('未检测到可用的音乐机器人，请先确保机器人已启动并连接', 'error');
+        return;
+      }
       this.notify('正在加载并播放歌单...', 'info');
       try {
-        const res = await axios.post(`/api/player/${this.activeBotId}/play-playlist`, { playlistId, platform });
+        const res = await axios.post(`/api/player/${botId}/play-playlist`, { playlistId, platform });
         if (res.data?.message) {
           this.notify(res.data.message, res.data.ok === false ? 'error' : 'success');
         }
-        this._setTiming(this.activeBotId, { serverElapsed: 0 });
+        this._setTiming(botId, { serverElapsed: 0 });
         this._syncAfterAction();
       } catch (e: any) {
         // A 403 here means a guest lacks the "play entire collection" permission
@@ -663,7 +700,11 @@ export const usePlayerStore = defineStore('player', {
     },
 
     async startFm(platform: Source = 'netease') {
-      if (!this.activeBotId) return;
+      const botId = await this.ensureActiveBot();
+      if (!botId) {
+        this.notify('未检测到可用的音乐机器人，请先确保机器人已启动并连接', 'error');
+        return;
+      }
       const platformLabels: Record<string, string> = {
         netease: '网易云私人 FM',
         qq: 'QQ 音乐雷达',
@@ -673,12 +714,12 @@ export const usePlayerStore = defineStore('player', {
       const label = platformLabels[platform] || '私人 FM';
       this.notify(`正在开启 ${label}，正在获取推荐曲目...`, 'info');
       try {
-        const res = await axios.post(`/api/player/${this.activeBotId}/fm`, { platform });
+        const res = await axios.post(`/api/player/${botId}/fm`, { platform });
         if (res.data?.message) {
           const isError = res.data.ok === false;
           this.notify(res.data.message, isError ? 'error' : 'success');
         }
-        this._setTiming(this.activeBotId, { serverElapsed: 0 });
+        this._setTiming(botId, { serverElapsed: 0 });
         this._syncAfterAction();
         this.fetchQueue();
       } catch (err: any) {
