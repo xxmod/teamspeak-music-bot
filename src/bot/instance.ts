@@ -1780,10 +1780,6 @@ export class BotInstance extends EventEmitter {
       return `Failed to start ${label}: all recommended songs are unavailable or require VIP`;
     }
 
-    if (this.queue.unplayedCount() <= 3) {
-      this.refillFm().catch((err) => this.logger.error({ err }, "Proactive FM refill failed"));
-    }
-
     return `${label} started: ${currentTrack.name} - ${currentTrack.artist}`;
   }
 
@@ -1838,10 +1834,24 @@ export class BotInstance extends EventEmitter {
         }
       }
       if (songs.length === 0) return;
-      for (const song of songs) {
+
+      // 查重：过滤掉当前队列中已存在的同平台同ID歌曲，避免由于接口重复返回导致 123123 重复入队
+      const currentSongs = this.queue.list();
+      const existingKeys = new Set(currentSongs.map((s) => `${s.platform}:${s.id}`));
+      const uniqueSongs = songs.filter((s) => !existingKeys.has(`${provider.platform}:${s.id}`));
+
+      if (uniqueSongs.length === 0) {
+        this.logger.debug(
+          { fetched: songs.length, platform: provider.platform },
+          "FM refill returned already-queued songs, skipped to avoid duplication",
+        );
+        return;
+      }
+
+      for (const song of uniqueSongs) {
         this.queue.add(this.withRequester({ ...song, platform: provider.platform }, this.fmRequesterName));
       }
-      this.logger.debug({ count: songs.length, platform: provider.platform }, "FM queue refilled");
+      this.logger.debug({ count: uniqueSongs.length, platform: provider.platform }, "FM queue refilled");
     } catch (err) {
       this.logger.error({ err }, "Failed to refill FM queue");
     }

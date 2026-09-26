@@ -1776,6 +1776,29 @@ describe("BotInstance.startFm and FM mode error resilience", () => {
     expect(provider.getPersonalFm).toHaveBeenCalledWith();
   });
 
+  it("deduplicates songs during refillFm to avoid 123123 repetition", async () => {
+    const s1 = makeMockSong("1", "Song 1");
+    const s2 = makeMockSong("2", "Song 2");
+    const s3 = makeMockSong("3", "Song 3");
+    const s4 = makeMockSong("4", "Song 4");
+    let callIdx = 0;
+    const { ctx } = createFmContext({
+      getPersonalFm: async () => {
+        callIdx++;
+        return callIdx === 1 ? [s1, s2, s3] : [s1, s2, s3, s4];
+      },
+      resolveAndPlay: async () => true,
+    });
+
+    await ctx.startFm(ctx.neteaseProvider);
+    expect(ctx.queue.size()).toBe(3);
+
+    await ctx.refillFm();
+    expect(ctx.queue.size()).toBe(4);
+    const queuedIds = ctx.queue.list().map((s: any) => s.id);
+    expect(queuedIds).toEqual(["1", "2", "3", "4"]);
+  });
+
   it("playNext retries up to 6 times in FM mode to skip unplayable songs", async () => {
     let playedIds: string[] = [];
     let callIdx = 0;

@@ -333,7 +333,7 @@ export class NeteaseProvider implements MusicProvider {
 
   async getPersonalFm(cookieOverride?: string): Promise<Song[]> {
     const res = await this.api.get("/personal_fm", {
-      params: { ...this.getCookieParams(cookieOverride) },
+      params: { timestamp: Date.now(), ...this.getCookieParams(cookieOverride) },
     });
     return mapNeteaseSongs(res.data?.data);
   }
