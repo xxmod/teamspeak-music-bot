@@ -352,8 +352,12 @@ export class PlayQueue {
     return this.currentIndex;
   }
 
-  /** Number of songs not yet played in Random mode. */
+  /** Number of songs not yet played. */
   unplayedCount(): number {
+    if (this.mode === PlayMode.Sequential) {
+      if (this.currentIndex < 0) return this.songs.length;
+      return Math.max(0, this.songs.length - 1 - this.currentIndex);
+    }
     return this.songs.length - this.playedIndices.size;
   }
 

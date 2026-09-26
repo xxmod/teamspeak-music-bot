@@ -1745,7 +1745,7 @@ export class BotInstance extends EventEmitter {
     for (const song of songs) {
       this.queue.add(this.withRequester({ ...song, platform: provider.platform }, requesterName));
     }
-    this.queue.setMode(PlayMode.Random);
+    this.queue.setMode(PlayMode.Sequential);
     this.isFmMode = true;
     this.fmProvider = provider;
     this.fmRequesterName = requesterName?.trim() || undefined;
