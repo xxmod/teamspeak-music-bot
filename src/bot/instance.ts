@@ -7,7 +7,7 @@ import {
 } from "../ts-protocol/client.js";
 import { AudioPlayer } from "../audio/player.js";
 import { PlayQueue, PlayMode, type QueuedSong } from "../audio/queue.js";
-import { analyzeAudioLoudness } from "../audio/normalizer.js";
+import { analyzeAudioLoudness, BACKGROUND_ANALYZE_SECONDS } from "../audio/normalizer.js";
 import type { MusicProvider, Platform, Song } from "../music/provider.js";
 import {
   parseCommand,
@@ -1161,7 +1161,8 @@ export class BotInstance extends EventEmitter {
         try {
           const analysis = await analyzeAudioLoudness(url, {
             targetLufs,
-            timeoutMs: 12000,
+            maxAnalyzeSeconds: BACKGROUND_ANALYZE_SECONDS,
+            timeoutMs: 20000,
             logger: this.logger,
           });
           if (analysis) {
@@ -1208,7 +1209,8 @@ export class BotInstance extends EventEmitter {
         const targetLufs = this.config.audioNormalization?.targetLufs ?? -16;
         const analysis = await analyzeAudioLoudness(res.url, {
           targetLufs,
-          timeoutMs: 12000,
+          maxAnalyzeSeconds: BACKGROUND_ANALYZE_SECONDS,
+          timeoutMs: 20000,
           logger: this.logger,
         });
         if (analysis) {

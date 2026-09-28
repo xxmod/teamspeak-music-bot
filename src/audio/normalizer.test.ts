@@ -6,6 +6,7 @@ import {
   analyzeAudioLoudness,
   DEFAULT_TARGET_LUFS,
   DEFAULT_MAX_ANALYZE_SECONDS,
+  BACKGROUND_ANALYZE_SECONDS,
   MAX_BOOST_GAIN_DB,
   MAX_CUT_GAIN_DB,
   SAFE_TRUE_PEAK_LIMIT,
@@ -105,9 +106,14 @@ describe("buildAnalyzeFfmpegArgs", () => {
 
   it("uses DEFAULT_MAX_ANALYZE_SECONDS (60) by default", () => {
     expect(DEFAULT_MAX_ANALYZE_SECONDS).toBe(60);
+    expect(BACKGROUND_ANALYZE_SECONDS).toBe(180);
     const args = buildAnalyzeFfmpegArgs("test.mp3");
     expect(args).toContain("-t");
     expect(args[args.indexOf("-t") + 1]).toBe("60");
+
+    const bgArgs = buildAnalyzeFfmpegArgs("test.mp3", -16, BACKGROUND_ANALYZE_SECONDS);
+    expect(bgArgs).toContain("-t");
+    expect(bgArgs[bgArgs.indexOf("-t") + 1]).toBe("180");
   });
 
   it("adds bilibili headers for bilibili URLs", () => {

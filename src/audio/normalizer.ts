@@ -24,6 +24,8 @@ export interface NormalizerOptions {
 export const DEFAULT_TARGET_LUFS = -16;
 export const DEFAULT_TIMEOUT_MS = 8000;
 export const DEFAULT_MAX_ANALYZE_SECONDS = 60;
+/** 后台异步分析时的采样秒数（覆盖主歌及两轮副歌高潮，避免慢热曲目误判） */
+export const BACKGROUND_ANALYZE_SECONDS = 180;
 
 /** 最大允许正向放大增益（dB），防止对极轻微噪音产生过度放大 */
 export const MAX_BOOST_GAIN_DB = 12;
