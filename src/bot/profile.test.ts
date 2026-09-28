@@ -264,3 +264,104 @@ describe("BotProfileManager channel description follows the bot (#159)", () => {
     expect(channelEdits()).toHaveLength(1);
   });
 });
+
+describe("BotProfileManager nickname format without bot suffix", () => {
+  let ts: ReturnType<typeof makeMockTs>;
+  beforeEach(() => { ts = makeMockTs(); });
+
+  it("builds nickname as '♪ 音乐名 - 作者名' for short songs", () => {
+    const pm = new BotProfileManager(ts as any, noopLogger, cfgOff, "MyMusicBot");
+    const nickname = (pm as any).buildNickname({
+      ...fakeSong,
+      name: "晴天",
+      artist: "周杰伦",
+    });
+    expect(nickname).toBe("\u266A 晴天 - 周杰伦");
+    expect(nickname).not.toContain("MyMusicBot");
+  });
+
+  it("truncates long song names at 12 Chinese characters width followed by ...", () => {
+    const pm = new BotProfileManager(ts as any, noopLogger, cfgOff, "MyMusicBot");
+    // 【陈奕迅 无损音质】富士山下
+    // 【 (2), 陈 (2), 奕 (2), 迅 (2), 空格 (1), 无 (2), 损 (2), 音 (2), 质 (2), 】 (2), 富 (2), 士 (2) => 23 weight <= 24
+    // 山 (2) => 25 > 24，截断在“士”
+    const nickname = (pm as any).buildNickname({
+      ...fakeSong,
+      name: "【陈奕迅 无损音质】富士山下",
+      artist: "陈奕迅",
+    });
+    expect(nickname).toBe("\u266A 【陈奕迅 无损音质】富士...");
+    expect(nickname).not.toContain("MyMusicBot");
+  });
+
+  it("does not count separator ' - ' towards the 12 Chinese characters limit", () => {
+    const pm = new BotProfileManager(ts as any, noopLogger, cfgOff, "MyMusicBot");
+    // 歌名“十年”：4 权重
+    // 分隔符“ - ”不记数
+    // 剩余额度 20 权重 = 10 个汉字：“陈奕迅与好友们的超级”
+    const nickname = (pm as any).buildNickname({
+      ...fakeSong,
+      name: "十年",
+      artist: "陈奕迅与好友们的超级合唱团队",
+    });
+    expect(nickname).toBe("\u266A 十年 - 陈奕迅与好友们的超级...");
+  });
+
+  it("counts 2 English letters as 1 Chinese character width", () => {
+    const pm = new BotProfileManager(ts as any, noopLogger, cfgOff, "MyMusicBot");
+    // 24 个英文字母 = 12 个中文字符宽度
+    const nickname = (pm as any).buildNickname({
+      ...fakeSong,
+      name: "abcdefghijklmnopqrstuvwxyz",
+      artist: "Singer",
+    });
+    // 前 24 个字母: abcdefghijklmnopqrstuvwx (24 weight)
+    expect(nickname).toBe("\u266A abcdefghijklmnopqrstuvwx...");
+  });
+
+  it("strictly limits nickname length to <= 30 characters for English collaboration tracks like Starboy", () => {
+    const pm = new BotProfileManager(ts as any, noopLogger, cfgOff, "MyMusicBot");
+    const nickname = (pm as any).buildNickname({
+      ...fakeSong,
+      name: "Starboy",
+      artist: "The Weeknd / Daft Punk",
+    });
+    expect(nickname).toBe("\u266A Starboy - The Weeknd / Da...");
+    expect(nickname.length).toBe(30);
+    expect(nickname.length).toBeLessThanOrEqual(30);
+  });
+
+  it("never exceeds 30 characters across various extreme combinations", () => {
+    const pm = new BotProfileManager(ts as any, noopLogger, cfgOff, "MyMusicBot");
+    const cases = [
+      { name: "Supercalifragilisticexpialidocious", artist: "Unknown" },
+      { name: "Short", artist: "Very long artist name that goes on and on and on" },
+      { name: "中英文混排 Song Name 2026", artist: "Artist With Lots Of Featured Collaborators" },
+      { name: "123456789012345678901234567890", artist: "Singer" },
+    ];
+    for (const c of cases) {
+      const nick = (pm as any).buildNickname({ ...fakeSong, ...c });
+      expect(nick.length).toBeLessThanOrEqual(30);
+    }
+  });
+
+  it("sends clientupdate with new nickname format on song change", async () => {
+    const commands: string[] = [];
+    (ts.sendCommandNoWait as any).mockImplementation(async (cmd: string) => {
+      commands.push(cmd);
+    });
+    const cfgNickname = { ...cfgOff, nicknameEnabled: true };
+    const pm = new BotProfileManager(ts as any, noopLogger, cfgNickname, "MyMusicBot");
+
+    await pm.onSongChange({
+      ...fakeSong,
+      name: "晴天",
+      artist: "周杰伦",
+    });
+
+    const updateCmd = commands.find((c) => c.startsWith("clientupdate"));
+    expect(updateCmd).toBeDefined();
+    expect(updateCmd).toContain("client_nickname=");
+    expect(updateCmd).not.toContain("MyMusicBot");
+  });
+});

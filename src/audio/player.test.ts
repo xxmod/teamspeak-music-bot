@@ -89,6 +89,18 @@ describe("buildFfmpegArgs", () => {
     expect(args).toContain("s16le");
     expect(args[args.length - 1]).toBe("-");
   });
+
+  it("applies -af volume=<gain>dB when gainDb is provided and non-zero", () => {
+    const args = buildFfmpegArgs("https://example.com/song.mp3", 0, 4.5);
+    const afIdx = args.indexOf("-af");
+    expect(afIdx).toBeGreaterThan(-1);
+    expect(args[afIdx + 1]).toBe("volume=4.50dB");
+  });
+
+  it("omits -af volume when gainDb is 0", () => {
+    const args = buildFfmpegArgs("https://example.com/song.mp3", 0, 0);
+    expect(args).not.toContain("-af");
+  });
 });
 
 describe("volumeToFactor (#84 smooth volume curve)", () => {
@@ -119,6 +131,17 @@ describe("volumeToFactor (#84 smooth volume curve)", () => {
 
   it("keeps the low range gentle", () => {
     expect(volumeToFactor(50)).toBeLessThan(0.12);
+  });
+
+  it("attenuates uniformly in decibels (~4 to 6 dB per 10% step) avoiding abrupt collapse at low volume", () => {
+    for (let v = 100; v >= 30; v -= 10) {
+      const fHigh = volumeToFactor(v);
+      const fLow = volumeToFactor(v - 10);
+      const dropDb = 20 * Math.log10(fHigh) - 20 * Math.log10(fLow);
+      // Each 10% step drops between 3.5 dB and 6.0 dB, smoothly and consistently
+      expect(dropDb).toBeGreaterThan(3.5);
+      expect(dropDb).toBeLessThan(6.5);
+    }
   });
 });
 
@@ -657,4 +680,49 @@ describe("AudioPlayer stall/EOF end-detection is gated on playing state (R3-4)",
       vi.useRealTimers();
     }
   });
+
+  it("suppresses 'frame' emissions when volume <= 0 so TS3 blue light extinguishes, while advancing framesPlayed", () => {
+    vi.useFakeTimers(FAKE_TIMER_OPTS);
+    try {
+      const player = new AudioPlayer(silentLogger);
+      player.setVolume(0);
+
+      const p = player as unknown as {
+        ffmpeg: unknown;
+        currentSongDuration: number;
+        pcmBuffer: Buffer;
+        emptyFrameAttempts: number;
+        framesPlayed: number;
+        state: string;
+        startFrameLoop(): void;
+      };
+      p.ffmpeg = { pid: undefined };
+      p.currentSongDuration = 100;
+      p.pcmBuffer = Buffer.alloc(FRAME_BYTES * 50);
+      p.emptyFrameAttempts = 0;
+      p.framesPlayed = 0;
+      p.state = "playing";
+      p.startFrameLoop();
+
+      const frames: Buffer[] = [];
+      player.on("frame", (f) => frames.push(f));
+
+      // Advance 10 frames (200ms) with volume=0
+      vi.advanceTimersByTime(20 * 10);
+
+      expect(frames.length).toBe(0); // Zero frames emitted (TS3 mic turns off)
+      expect(p.framesPlayed).toBeGreaterThanOrEqual(10); // But playback timeline advances
+      expect(p.pcmBuffer.length).toBe(FRAME_BYTES * 40); // Buffer is consumed
+
+      // Now restore volume to 50%
+      player.setVolume(50);
+      vi.advanceTimersByTime(20 * 5);
+
+      expect(frames.length).toBeGreaterThan(0); // Frames resumed
+      player.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
+

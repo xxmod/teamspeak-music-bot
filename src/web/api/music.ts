@@ -3,6 +3,7 @@ import type { MusicProvider, Song, Album } from "../../music/provider.js";
 import { YouTubeProvider } from "../../music/youtube.js";
 import type { Logger } from "../../logger.js";
 import { isProviderEnabled, defaultPlatform, saveConfig, type BotConfig } from "../../data/config.js";
+import type { BotDatabase } from "../../data/database.js";
 import { requirePermission } from "../middleware/requirePermission.js";
 import { requireNotGuest } from "../middleware/requireNotGuest.js";
 import { authorize } from "../middleware/authorize.js";
@@ -70,9 +71,16 @@ export function createMusicRouter(
   // When set (alongside config), a quality change is persisted to config.json so
   // it survives a restart (#125). Omitted by unit-test routers → no persistence.
   configPath?: string,
+  db?: BotDatabase,
 ): Router {
   const router = Router();
   const youtubeProvider: MusicProvider = new YouTubeProvider();
+
+  function getUserCookieForPlatform(req: express.Request, platform: string): string | undefined {
+    if (!db || !req.user?.id) return undefined;
+    const cookie = db.getUserCookie(req.user.id, platform);
+    return cookie ?? undefined;
+  }
 
   function isLocalAudioEnabled(): boolean {
     return config?.localAudioEnabled !== false;
@@ -257,7 +265,8 @@ export function createMusicRouter(
     try {
       const provider = resolveProvider(req.query.platform, res);
       if (!provider) return;
-      const songs = await provider.getPlaylistSongs(req.params.id);
+      const userCookie = getUserCookieForPlatform(req, provider.platform);
+      const songs = await (provider as any).getPlaylistSongs(req.params.id, userCookie);
       res.json({ songs });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
@@ -305,7 +314,8 @@ export function createMusicRouter(
         res.status(501).json({ error: "Not supported by this provider" });
         return;
       }
-      const songs = await provider.getDailyRecommendSongs();
+      const userCookie = getUserCookieForPlatform(req, provider.platform);
+      const songs = await provider.getDailyRecommendSongs(userCookie);
       res.json({ songs });
     } catch (err) {
       logger.error({ err }, "Get daily recommend songs failed");
@@ -321,7 +331,8 @@ export function createMusicRouter(
         res.status(501).json({ error: "Not supported by this provider" });
         return;
       }
-      const songs = await provider.getPersonalFm();
+      const userCookie = getUserCookieForPlatform(req, provider.platform);
+      const songs = await provider.getPersonalFm(userCookie);
       res.json({ songs });
     } catch (err) {
       logger.error({ err }, "Get personal FM failed");
@@ -337,10 +348,99 @@ export function createMusicRouter(
         res.status(501).json({ error: "Not supported by this provider" });
         return;
       }
-      const playlists = await provider.getUserPlaylists();
+      const userCookie = getUserCookieForPlatform(req, provider.platform);
+      const playlists = await provider.getUserPlaylists(userCookie);
       res.json({ playlists });
     } catch (err) {
       logger.error({ err }, "Get user playlists failed");
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  router.post("/song/like", requireNotGuest, async (req, res) => {
+    try {
+      const { platform, songId, like } = req.body ?? {};
+      if (!songId || typeof songId !== "string") {
+        res.status(400).json({ error: "songId is required" });
+        return;
+      }
+      const provider = resolveProvider(platform, res);
+      if (!provider) return;
+      if (!provider.likeSong) {
+        res.status(501).json({ error: `Not supported by provider: ${provider.platform}` });
+        return;
+      }
+      const userCookie = getUserCookieForPlatform(req, provider.platform);
+      const isLike = like !== false;
+      logger.info(
+        { platform: provider.platform, songId, isLike, userId: req.user?.id, hasUserCookie: Boolean(userCookie) },
+        "Processing song like request"
+      );
+      const success = await provider.likeSong(songId, isLike, userCookie);
+      if (success) {
+        logger.info(
+          { platform: provider.platform, songId, isLike, userId: req.user?.id },
+          "Song like operation succeeded"
+        );
+        res.json({ success: true, message: isLike ? "已添加到喜爱歌单" : "已从喜爱歌单移除" });
+      } else {
+        logger.warn(
+          { platform: provider.platform, songId, isLike, userId: req.user?.id },
+          "Provider rejected song like operation (check provider logs for upstream details)"
+        );
+        const errMsg = provider.platform === "qq"
+          ? "QQ音乐官方限制直接修改默认【我喜欢】歌单，建议使用【添加到歌单】存入您的自建歌单"
+          : "操作失败，平台未开放网页端写入权限或凭证已过期";
+        res.status(502).json({ error: errMsg });
+      }
+    } catch (err) {
+      logger.error({ err, platform: req.body?.platform, songId: req.body?.songId }, "Like song failed with error");
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  router.post("/playlist/add-song", requireNotGuest, async (req, res) => {
+    try {
+      const { platform, playlistId, songId } = req.body ?? {};
+      if (!playlistId || typeof playlistId !== "string") {
+        res.status(400).json({ error: "playlistId is required" });
+        return;
+      }
+      if (!songId || typeof songId !== "string") {
+        res.status(400).json({ error: "songId is required" });
+        return;
+      }
+      const provider = resolveProvider(platform, res);
+      if (!provider) return;
+      if (!provider.addSongToPlaylist) {
+        res.status(501).json({ error: `Not supported by provider: ${provider.platform}` });
+        return;
+      }
+      const userCookie = getUserCookieForPlatform(req, provider.platform);
+      logger.info(
+        { platform: provider.platform, playlistId, songId, userId: req.user?.id, hasUserCookie: Boolean(userCookie) },
+        "Processing add song to playlist request"
+      );
+      const success = await provider.addSongToPlaylist(playlistId, songId, userCookie);
+      if (success) {
+        logger.info(
+          { platform: provider.platform, playlistId, songId, userId: req.user?.id },
+          "Add song to playlist operation succeeded"
+        );
+        res.json({ success: true, message: "已成功添加到歌单" });
+      } else {
+        logger.warn(
+          { platform: provider.platform, playlistId, songId, userId: req.user?.id },
+          "Provider rejected add song to playlist operation (check provider logs for upstream details)"
+        );
+        const isFav = playlistId === "201" || playlistId === "3252653813";
+        const errMsg = (provider.platform === "qq" && isFav)
+          ? "QQ音乐官方限制直接修改默认【我喜欢】歌单，建议选择您的自建歌单添加"
+          : "添加失败，可能凭证已过期或无权限修改该歌单";
+        res.status(502).json({ error: errMsg });
+      }
+    } catch (err) {
+      logger.error({ err, platform: req.body?.platform, playlistId: req.body?.playlistId, songId: req.body?.songId }, "Add song to playlist failed with error");
       res.status(500).json({ error: (err as Error).message });
     }
   });
@@ -353,7 +453,8 @@ export function createMusicRouter(
         res.status(501).json({ error: "Not supported by this provider" });
         return;
       }
-      const detail = await provider.getPlaylistDetail(req.params.id);
+      const userCookie = getUserCookieForPlatform(req, provider.platform);
+      const detail = await (provider as any).getPlaylistDetail(req.params.id, userCookie);
       if (!detail) {
         res.status(404).json({ error: "Playlist not found" });
         return;

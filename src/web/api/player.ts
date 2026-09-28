@@ -129,12 +129,16 @@ export function createPlayerRouter(
           ? platform
           : "netease"
       );
-      const message = await bot.startFm(provider, requesterName(req));
+      const userCookie = (database && req.user?.id)
+        ? database.getUserCookie(req.user.id, provider.platform)
+        : undefined;
+      const message = await bot.startFm(provider, requesterName(req), userCookie ?? undefined);
       res.json({
         ok:
           !message.startsWith("No FM songs") &&
           !message.includes("not available") &&
-          !message.includes("not connected"),
+          !message.includes("not connected") &&
+          !message.startsWith("Failed to start"),
         message,
       });
     } catch (err) {
@@ -309,7 +313,9 @@ export function createPlayerRouter(
       bot.getPlayer().stop();
       bot.getPlayer().resetFailures();
 
-      const songs = await provider.getPlaylistSongs(playlistId);
+      const userId = (req as any).user?.id;
+      const userCookie = database && userId ? database.getUserCookie(userId, provider.platform) : undefined;
+      const songs = await (provider as any).getPlaylistSongs(playlistId, userCookie);
       if (songs.length === 0) {
         res.json({ message: "Playlist is empty" });
         return;

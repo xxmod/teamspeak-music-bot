@@ -503,3 +503,197 @@ describe("music router GET /bilibili/parts", () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe("music router POST /song/like & POST /playlist/add-song", () => {
+  let app: express.Express;
+  let botDb: BotDatabase;
+  let adminCookie: string;
+  let guestCookie: string;
+  let neteaseProvider: any;
+  let qqProvider: any;
+  let bilibiliProvider: any;
+
+  beforeEach(async () => {
+    botDb = createDatabase(":memory:");
+    const users = createUserStore(botDb.db);
+    const sessions = createSessionStore(botDb.db);
+    const perms = createPermissionStore(botDb.db);
+
+    const admin = await users.createUser("admin", "pw-admin", "admin");
+    adminCookie = `${SESSION_COOKIE_NAME}=${sessions.createSession(admin.id).token}`;
+
+    const guestUser = await users.createUser("guest_role", "pw-guest", "guest");
+    guestCookie = `${SESSION_COOKIE_NAME}=${sessions.createSession(guestUser.id).token}`;
+
+    botDb.setUserCookie(admin.id, "netease", "MUSIC_U=fake_netease_token");
+    botDb.setUserCookie(admin.id, "qq", "uin=12345; qm_keyst=fake_qq_token");
+
+    neteaseProvider = {
+      platform: "netease",
+      search: vi.fn(),
+      likeSong: vi.fn().mockResolvedValue(true),
+      addSongToPlaylist: vi.fn().mockResolvedValue(true),
+    };
+    qqProvider = {
+      platform: "qq",
+      search: vi.fn(),
+      likeSong: vi.fn().mockResolvedValue(true),
+      addSongToPlaylist: vi.fn().mockResolvedValue(true),
+    };
+    bilibiliProvider = {
+      platform: "bilibili",
+      search: vi.fn(),
+      // Does not implement likeSong or addSongToPlaylist
+    };
+
+    app = express();
+    app.use(express.json());
+    app.use(cookieParser());
+    app.use(
+      "/api",
+      createRequireAuth(sessions, perms, () => ({
+        ...getDefaultConfig().guestMode,
+        enabled: true,
+      })),
+    );
+    app.use(
+      "/api/music",
+      createMusicRouter(
+        neteaseProvider,
+        qqProvider,
+        bilibiliProvider,
+        pino({ level: "silent" }),
+        undefined,
+        getDefaultConfig(),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        botDb,
+      ),
+    );
+  });
+
+  afterEach(() => {
+    botDb.close();
+  });
+
+  it("denies unauthenticated request with 401", async () => {
+    const res = await request(app)
+      .post("/api/music/song/like")
+      .send({ platform: "netease", songId: "12345", like: true });
+    expect(res.status).toBe(401);
+  });
+
+  it("blocks guest user from calling /song/like", async () => {
+    const res = await request(app)
+      .post("/api/music/song/like")
+      .set("Cookie", guestCookie)
+      .send({ platform: "netease", songId: "12345", like: true });
+    expect(res.status).toBe(403);
+  });
+
+  it("blocks guest user from calling /playlist/add-song", async () => {
+    const res = await request(app)
+      .post("/api/music/playlist/add-song")
+      .set("Cookie", guestCookie)
+      .send({ platform: "netease", playlistId: "pl-1", songId: "12345" });
+    expect(res.status).toBe(403);
+  });
+
+  it("validates missing songId in /song/like", async () => {
+    const res = await request(app)
+      .post("/api/music/song/like")
+      .set("Cookie", adminCookie)
+      .send({ platform: "netease" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("songId is required");
+  });
+
+  it("validates missing playlistId or songId in /playlist/add-song", async () => {
+    const res1 = await request(app)
+      .post("/api/music/playlist/add-song")
+      .set("Cookie", adminCookie)
+      .send({ platform: "netease", songId: "12345" });
+    expect(res1.status).toBe(400);
+    expect(res1.body.error).toBe("playlistId is required");
+
+    const res2 = await request(app)
+      .post("/api/music/playlist/add-song")
+      .set("Cookie", adminCookie)
+      .send({ platform: "netease", playlistId: "pl-1" });
+    expect(res2.status).toBe(400);
+    expect(res2.body.error).toBe("songId is required");
+  });
+
+  it("returns 501 if provider does not support likeSong or addSongToPlaylist", async () => {
+    const likeRes = await request(app)
+      .post("/api/music/song/like")
+      .set("Cookie", adminCookie)
+      .send({ platform: "bilibili", songId: "BV123" });
+    expect(likeRes.status).toBe(501);
+
+    const addRes = await request(app)
+      .post("/api/music/playlist/add-song")
+      .set("Cookie", adminCookie)
+      .send({ platform: "bilibili", playlistId: "fav", songId: "BV123" });
+    expect(addRes.status).toBe(501);
+  });
+
+  it("successfully likes song with user cookie", async () => {
+    const res = await request(app)
+      .post("/api/music/song/like")
+      .set("Cookie", adminCookie)
+      .send({ platform: "netease", songId: "song-999", like: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(neteaseProvider.likeSong).toHaveBeenCalledWith(
+      "song-999",
+      true,
+      "MUSIC_U=fake_netease_token",
+    );
+  });
+
+  it("successfully unlikes song", async () => {
+    const res = await request(app)
+      .post("/api/music/song/like")
+      .set("Cookie", adminCookie)
+      .send({ platform: "netease", songId: "song-999", like: false });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(neteaseProvider.likeSong).toHaveBeenCalledWith(
+      "song-999",
+      false,
+      "MUSIC_U=fake_netease_token",
+    );
+  });
+
+  it("successfully adds song to playlist with user cookie", async () => {
+    const res = await request(app)
+      .post("/api/music/playlist/add-song")
+      .set("Cookie", adminCookie)
+      .send({ platform: "qq", playlistId: "pl-100", songId: "001song" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(qqProvider.addSongToPlaylist).toHaveBeenCalledWith(
+      "pl-100",
+      "001song",
+      "uin=12345; qm_keyst=fake_qq_token",
+    );
+  });
+
+  it("returns 502 when provider operation fails", async () => {
+    neteaseProvider.likeSong.mockResolvedValueOnce(false);
+    const res = await request(app)
+      .post("/api/music/song/like")
+      .set("Cookie", adminCookie)
+      .send({ platform: "netease", songId: "song-fail", like: true });
+
+    expect(res.status).toBe(502);
+    expect(res.body.error).toContain("操作失败");
+  });
+});
+

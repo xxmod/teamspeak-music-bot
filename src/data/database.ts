@@ -11,6 +11,7 @@ import type { QueuedSong } from "../audio/queue.js";
 export const SHARED_QUEUE_OWNER = "__shared__";
 /** Cap per owner (private user OR the shared bucket). */
 export const MAX_SAVED_QUEUES = 50;
+export const MAX_AUDIO_LOUDNESS_CACHE = 1024;
 /** Cap per saved queue / persisted live-queue snapshot. */
 export const MAX_QUEUE_SONGS = 1000;
 
@@ -126,6 +127,14 @@ export interface FavoritePlaylist {
   createdAt: string;
 }
 
+export interface CachedLoudness {
+  platform: string;
+  songId: string;
+  integratedLoudness: number;
+  truePeak: number;
+  gainDb: number;
+}
+
 export interface BotDatabase {
   db: Database.Database;
   addPlayHistory(entry: PlayHistoryEntry): void;
@@ -153,6 +162,23 @@ export interface BotDatabase {
   saveQueueState(state: QueueStateRow): void;
   getQueueState(botId: string): QueueStateRow | null;
   clearQueueState(botId: string): void;
+  // Audio loudness caching
+  getSongLoudness(platform: string, songId: string): CachedLoudness | null;
+  saveSongLoudness(
+    platform: string,
+    songId: string,
+    integratedLoudness: number,
+    truePeak: number,
+    gainDb: number,
+  ): void;
+  clearSongLoudness(): void;
+  getSongLoudnessCount(): number;
+  checkAndSyncTargetLufs(targetLufs: number): boolean;
+  // User platform cookies
+  setUserCookie(userId: string, platform: string, cookie: string): void;
+  getUserCookie(userId: string, platform: string): string | null;
+  getUserCookies(userId: string): Record<string, { configured: boolean; updatedAt: number }>;
+  deleteUserCookie(userId: string, platform: string): boolean;
   close(): void;
 }
 
@@ -328,6 +354,27 @@ function initTables(db: Database.Database): void {
       fmPlatform   TEXT NOT NULL DEFAULT '',
       updatedAt    TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS audio_loudness (
+      platform           TEXT NOT NULL,
+      songId             TEXT NOT NULL,
+      integratedLoudness REAL NOT NULL,
+      truePeak           REAL NOT NULL,
+      gainDb             REAL NOT NULL,
+      createdAt          TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (platform, songId)
+    );
+    CREATE INDEX IF NOT EXISTS idx_audio_loudness_createdAt ON audio_loudness(createdAt);
+
+    CREATE TABLE IF NOT EXISTS user_cookies (
+      userId    TEXT NOT NULL,
+      platform  TEXT NOT NULL,
+      cookie    TEXT NOT NULL,
+      updatedAt INTEGER NOT NULL,
+      PRIMARY KEY (userId, platform),
+      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_cookies_userId ON user_cookies(userId);
   `);
 }
 
@@ -513,6 +560,62 @@ export function createDatabase(dbPath: string): BotDatabase {
   `);
   const selectQueueState = db.prepare("SELECT * FROM queue_state WHERE botId = ?");
   const deleteQueueState = db.prepare("DELETE FROM queue_state WHERE botId = ?");
+
+  const selectLoudness = db.prepare(`
+    SELECT platform, songId, integratedLoudness, truePeak, gainDb
+    FROM audio_loudness
+    WHERE platform = ? AND songId = ?
+  `);
+
+  const touchLoudness = db.prepare(`
+    UPDATE audio_loudness SET createdAt = datetime('now')
+    WHERE platform = ? AND songId = ?
+  `);
+
+  const upsertLoudness = db.prepare(`
+    INSERT INTO audio_loudness (platform, songId, integratedLoudness, truePeak, gainDb)
+    VALUES (@platform, @songId, @integratedLoudness, @truePeak, @gainDb)
+    ON CONFLICT(platform, songId) DO UPDATE SET
+      integratedLoudness = excluded.integratedLoudness,
+      truePeak = excluded.truePeak,
+      gainDb = excluded.gainDb,
+      createdAt = datetime('now')
+  `);
+
+  const pruneLoudness = db.prepare(`
+    DELETE FROM audio_loudness
+    WHERE rowid NOT IN (
+      SELECT rowid FROM audio_loudness
+      ORDER BY createdAt DESC
+      LIMIT ?
+    )
+  `);
+
+  const clearLoudness = db.prepare("DELETE FROM audio_loudness");
+  const countLoudness = db.prepare("SELECT count(*) as c FROM audio_loudness");
+  const selectTargetLufs = db.prepare(
+    "SELECT value FROM schema_meta WHERE key = 'audio_normalization_target_lufs'",
+  );
+  const upsertTargetLufs = db.prepare(
+    "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('audio_normalization_target_lufs', ?)",
+  );
+
+  const upsertUserCookie = db.prepare(`
+    INSERT INTO user_cookies (userId, platform, cookie, updatedAt)
+    VALUES (@userId, @platform, @cookie, @updatedAt)
+    ON CONFLICT(userId, platform) DO UPDATE SET
+      cookie = excluded.cookie,
+      updatedAt = excluded.updatedAt
+  `);
+  const selectUserCookie = db.prepare(`
+    SELECT cookie FROM user_cookies WHERE userId = ? AND platform = ?
+  `);
+  const selectAllUserCookies = db.prepare(`
+    SELECT platform, updatedAt FROM user_cookies WHERE userId = ?
+  `);
+  const deleteUserCookieStmt = db.prepare(`
+    DELETE FROM user_cookies WHERE userId = ? AND platform = ?
+  `);
 
   return {
     db,
@@ -711,6 +814,77 @@ export function createDatabase(dbPath: string): BotDatabase {
 
     clearQueueState(botId) {
       deleteQueueState.run(botId);
+    },
+
+    getSongLoudness(platform, songId) {
+      const row = selectLoudness.get(platform, songId) as CachedLoudness | undefined;
+      if (row) {
+        touchLoudness.run(platform, songId);
+      }
+      return row ?? null;
+    },
+
+    saveSongLoudness(platform, songId, integratedLoudness, truePeak, gainDb) {
+      upsertLoudness.run({
+        platform,
+        songId,
+        integratedLoudness,
+        truePeak,
+        gainDb,
+      });
+      pruneLoudness.run(MAX_AUDIO_LOUDNESS_CACHE);
+    },
+
+    clearSongLoudness() {
+      clearLoudness.run();
+    },
+
+    getSongLoudnessCount() {
+      const row = countLoudness.get() as { c: number } | undefined;
+      return row?.c ?? 0;
+    },
+
+    checkAndSyncTargetLufs(targetLufs) {
+      const row = selectTargetLufs.get() as { value: string } | undefined;
+      const targetStr = String(targetLufs);
+      if (!row) {
+        upsertTargetLufs.run(targetStr);
+        return false;
+      }
+      if (row.value !== targetStr) {
+        clearLoudness.run();
+        upsertTargetLufs.run(targetStr);
+        return true;
+      }
+      return false;
+    },
+
+    setUserCookie(userId: string, platform: string, cookie: string) {
+      upsertUserCookie.run({
+        userId,
+        platform,
+        cookie,
+        updatedAt: Date.now(),
+      });
+    },
+
+    getUserCookie(userId: string, platform: string) {
+      const row = selectUserCookie.get(userId, platform) as { cookie: string } | undefined;
+      return row?.cookie ?? null;
+    },
+
+    getUserCookies(userId: string) {
+      const rows = selectAllUserCookies.all(userId) as Array<{ platform: string; updatedAt: number }>;
+      const res: Record<string, { configured: boolean; updatedAt: number }> = {};
+      for (const row of rows) {
+        res[row.platform] = { configured: true, updatedAt: row.updatedAt };
+      }
+      return res;
+    },
+
+    deleteUserCookie(userId: string, platform: string) {
+      const res = deleteUserCookieStmt.run(userId, platform);
+      return res.changes > 0;
     },
 
     close() {

@@ -40,6 +40,7 @@ export interface Playlist {
   coverUrl: string;
   songCount: number;
   platform: Platform;
+  editable?: boolean;
 }
 
 export interface PlaylistDetail {
@@ -104,8 +105,14 @@ export interface MusicProvider {
   setCookie(cookie: string): void;
   getCookie(): string;
   getAuthStatus(): Promise<AuthStatus>;
-  getPersonalFm?(): Promise<Song[]>;
-  getDailyRecommendSongs?(): Promise<Song[]>;
-  getUserPlaylists?(): Promise<Playlist[]>;
+  getPersonalFm?(cookieOverride?: string): Promise<Song[]>;
+  getDailyRecommendSongs?(cookieOverride?: string): Promise<Song[]>;
+  getUserPlaylists?(cookieOverride?: string): Promise<Playlist[]>;
   getPlaylistDetail?(playlistId: string): Promise<PlaylistDetail | null>;
+  checkQrCodeForCookie?(
+    key: string
+  ): Promise<{ status: "waiting" | "scanned" | "confirmed" | "expired"; cookie?: string }>;
+  likeSong?(songId: string, like: boolean, cookieOverride?: string): Promise<boolean>;
+  addSongToPlaylist?(playlistId: string, songId: string, cookieOverride?: string): Promise<boolean>;
 }
+

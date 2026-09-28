@@ -5,6 +5,7 @@ import type {
   Song,
   SongUrlResult,
   Playlist,
+  PlaylistDetail,
   LyricLine,
   SearchResult,
   QrCodeResult,
@@ -105,6 +106,12 @@ export class BiliBiliProvider implements MusicProvider {
 
   private get cookieHeaders(): Record<string, string> {
     const combined = [this.buvidCookie, this.cookie].filter(Boolean).join("; ");
+    return combined ? { Cookie: combined } : {};
+  }
+
+  private getCookieHeaders(cookieOverride?: string): Record<string, string> {
+    const cookie = cookieOverride !== undefined ? cookieOverride : this.cookie;
+    const combined = [this.buvidCookie, cookie].filter(Boolean).join("; ");
     return combined ? { Cookie: combined } : {};
   }
 
@@ -407,6 +414,36 @@ export class BiliBiliProvider implements MusicProvider {
     }
   }
 
+  async checkQrCodeForCookie(
+    key: string
+  ): Promise<{ status: "waiting" | "scanned" | "confirmed" | "expired"; cookie?: string }> {
+    const res = await this.passportApi.get(
+      "/x/passport-login/web/qrcode/poll",
+      { params: { qrcode_key: key }, headers: this.cookieHeaders }
+    );
+
+    const code = res.data?.data?.code;
+    switch (code) {
+      case 0: {
+        const setCookieHeaders = res.headers["set-cookie"];
+        let cookie = "";
+        if (setCookieHeaders) {
+          cookie = setCookieHeaders
+            .map((c: string) => c.split(";")[0])
+            .join("; ");
+        }
+        return { status: "confirmed", cookie };
+      }
+      case 86038:
+        return { status: "expired" };
+      case 86090:
+        return { status: "scanned" };
+      case 86101:
+      default:
+        return { status: "waiting" };
+    }
+  }
+
   // --- Auth Status ---
 
   async getAuthStatus(): Promise<AuthStatus> {
@@ -446,15 +483,16 @@ export class BiliBiliProvider implements MusicProvider {
   }
 
   /** 音乐区排行榜 + 个性化推荐（如果已登录）作为"每日推荐" */
-  async getDailyRecommendSongs(): Promise<Song[]> {
+  async getDailyRecommendSongs(cookieOverride?: string): Promise<Song[]> {
     await this.ensureBuvidCookie();
     const songs: Song[] = [];
+    const headers = this.getCookieHeaders(cookieOverride);
 
     // 1. 个性化推荐（带 cookie 效果更好）
     try {
       const res = await this.api.get("/x/web-interface/index/top/rcmd", {
         params: { ps: 10, fresh_type: 3 },
-        headers: this.cookieHeaders,
+        headers,
       });
       const items = res.data?.data?.item ?? [];
       for (const v of items) {
@@ -477,7 +515,7 @@ export class BiliBiliProvider implements MusicProvider {
       try {
         const res = await this.api.get("/x/web-interface/ranking/v2", {
           params: { rid: 3, type: "all" },
-          headers: this.cookieHeaders,
+          headers,
         });
         const list = res.data?.data?.list ?? [];
         for (const v of list.slice(0, 20)) {
@@ -499,6 +537,105 @@ export class BiliBiliProvider implements MusicProvider {
     return songs;
   }
 
+  /** 用户收藏夹转歌单 */
+  async getUserPlaylists(cookieOverride?: string): Promise<Playlist[]> {
+    const headers = this.getCookieHeaders(cookieOverride);
+    const cookie = cookieOverride !== undefined ? cookieOverride : this.cookie;
+    if (!cookie) return [];
+
+    let mid = "";
+    const m = /(?:^|; )DedeUserID=(\d+)/.exec(cookie);
+    if (m) {
+      mid = m[1];
+    } else {
+      try {
+        const nav = await this.api.get("/x/web-interface/nav", { headers });
+        if (nav.data?.data?.mid) {
+          mid = String(nav.data.data.mid);
+        }
+      } catch {
+        return [];
+      }
+    }
+    if (!mid) return [];
+
+    try {
+      const res = await this.api.get("/x/v3/fav/folder/created/list-all", {
+        params: { up_mid: mid },
+        headers,
+      });
+      const list = res.data?.data?.list ?? [];
+      return list.map((item: any) => ({
+        id: String(item.id),
+        name: item.title ?? "",
+        coverUrl: this.normalizeCover(item.cover ?? ""),
+        songCount: item.media_count ?? 0,
+        platform: "bilibili" as const,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  /** 获取收藏夹内的视频作为歌曲 */
+  async getPlaylistSongs(playlistId: string, cookieOverride?: string): Promise<Song[]> {
+    const songs: Song[] = [];
+    try {
+      const headers = this.getCookieHeaders(cookieOverride);
+      // B站限制每页最大 ps <= 40（推荐标准 20，超过40会返回 -400 请求错误），分页拉取前几页
+      const PAGE_SIZE = 20;
+      const MAX_PAGES = 5; // 支持最多拉取前 100 首视频
+      for (let pn = 1; pn <= MAX_PAGES; pn++) {
+        const res = await this.api.get("/x/v3/fav/resource/list", {
+          params: { media_id: playlistId, pn, ps: PAGE_SIZE },
+          headers,
+        });
+        const data = res.data?.data;
+        const medias = data?.medias ?? [];
+        for (const v of medias) {
+          const bvid = v.bvid || v.bv_id;
+          if (!bvid) continue;
+          songs.push({
+            id: String(bvid),
+            name: v.title ?? "",
+            artist: v.upper?.name ?? "",
+            album: "",
+            duration: v.duration ?? 0,
+            coverUrl: this.normalizeCover(v.cover ?? ""),
+            platform: "bilibili" as const,
+          });
+        }
+        if (!data?.has_more || medias.length === 0) {
+          break;
+        }
+      }
+    } catch {
+      return songs;
+    }
+    return songs;
+  }
+
+  async getPlaylistDetail(playlistId: string, cookieOverride?: string): Promise<PlaylistDetail | null> {
+    try {
+      const headers = this.getCookieHeaders(cookieOverride);
+      const res = await this.api.get("/x/v3/fav/folder/info", {
+        params: { media_id: playlistId },
+        headers,
+      });
+      const d = res.data?.data;
+      if (!d) return null;
+      return {
+        id: String(d.id),
+        name: d.title ?? "",
+        description: d.intro ?? "",
+        coverUrl: this.normalizeCover(d.cover ?? ""),
+        songCount: d.media_count ?? 0,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   /** 热门视频列表 */
   async getPopularVideos(limit = 20): Promise<Song[]> {
     try {
@@ -518,12 +655,6 @@ export class BiliBiliProvider implements MusicProvider {
     } catch {
       return [];
     }
-  }
-
-  // --- 不适用于B站 ---
-
-  async getPlaylistSongs(_playlistId: string): Promise<Song[]> {
-    return [];
   }
 
   async getAlbumSongs(_albumId: string): Promise<Song[]> {

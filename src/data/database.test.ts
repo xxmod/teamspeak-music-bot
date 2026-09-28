@@ -344,4 +344,145 @@ describe("guest principal migration", () => {
     d.db.close();
     rmSync(dir, { recursive: true, force: true });
   });
+
+  it("caches and retrieves song loudness metrics", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tsmb-db-loudness-"));
+    const p = join(dir, "t.db");
+    const d = createDatabase(p);
+
+    // Initial check: not cached
+    expect(d.getSongLoudness("netease", "123456")).toBeNull();
+
+    // Save analysis
+    d.saveSongLoudness("netease", "123456", -21.5, -4.2, 5.5);
+
+    const cached = d.getSongLoudness("netease", "123456");
+    expect(cached).not.toBeNull();
+    expect(cached!.platform).toBe("netease");
+    expect(cached!.songId).toBe("123456");
+    expect(cached!.integratedLoudness).toBe(-21.5);
+    expect(cached!.truePeak).toBe(-4.2);
+    expect(cached!.gainDb).toBe(5.5);
+
+    // Update / overwrite same song
+    d.saveSongLoudness("netease", "123456", -19.0, -2.0, 3.0);
+    const updated = d.getSongLoudness("netease", "123456");
+    expect(updated!.gainDb).toBe(3.0);
+
+    d.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("caps loudness cache to MAX_AUDIO_LOUDNESS_CACHE and evicts least recently accessed", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tsmb-db-loudness-lru-"));
+    const p = join(dir, "t.db");
+    const d = createDatabase(p);
+
+    // Save initial batch and verify touchLoudness
+    d.saveSongLoudness("netease", "song-old", -20, -1, 4);
+    d.db.prepare("UPDATE audio_loudness SET createdAt = datetime('now', '-10 days') WHERE songId = 'song-old'").run();
+
+    // Getting the song should touch its createdAt
+    d.getSongLoudness("netease", "song-old");
+    const row = d.db.prepare("SELECT createdAt FROM audio_loudness WHERE songId = 'song-old'").get() as { createdAt: string };
+    expect(row.createdAt.slice(0, 10)).toBe(new Date().toISOString().slice(0, 10));
+
+    // Fill beyond 1024
+    d.db.transaction(() => {
+      for (let i = 0; i <= 1025; i++) {
+        d.saveSongLoudness("netease", `s-${i}`, -16, -1, 0);
+      }
+    })();
+
+    const countRow = d.db.prepare("SELECT count(*) as c FROM audio_loudness").get() as { c: number };
+    expect(countRow.c).toBe(1024);
+    // Oldest entries (s-0, s-1) pruned
+    expect(d.getSongLoudness("netease", "s-0")).toBeNull();
+    expect(d.getSongLoudness("netease", "s-1")).toBeNull();
+    // Newest entries retained
+    expect(d.getSongLoudness("netease", "s-1025")).not.toBeNull();
+
+    d.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("clears loudness cache and handles targetLufs syncing on change", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tsmb-db-loudness-clear-"));
+    const p = join(dir, "t.db");
+    const d = createDatabase(p);
+
+    d.saveSongLoudness("netease", "s-1", -18, -2, 2);
+    d.saveSongLoudness("qq", "s-2", -14, -1, -2);
+    expect(d.getSongLoudnessCount()).toBe(2);
+
+    // Initial checkAndSyncTargetLufs sets current value without clearing
+    const cleared1 = d.checkAndSyncTargetLufs(-16);
+    expect(cleared1).toBe(false);
+    expect(d.getSongLoudnessCount()).toBe(2);
+
+    // Same targetLufs: no clearing
+    const clearedSame = d.checkAndSyncTargetLufs(-16);
+    expect(clearedSame).toBe(false);
+    expect(d.getSongLoudnessCount()).toBe(2);
+
+    // Different targetLufs (-14): clears database and updates record
+    const clearedDiff = d.checkAndSyncTargetLufs(-14);
+    expect(clearedDiff).toBe(true);
+    expect(d.getSongLoudnessCount()).toBe(0);
+    expect(d.getSongLoudness("netease", "s-1")).toBeNull();
+
+    // Explicit clearSongLoudness
+    d.saveSongLoudness("netease", "s-3", -20, -1, 4);
+    expect(d.getSongLoudnessCount()).toBe(1);
+    d.clearSongLoudness();
+    expect(d.getSongLoudnessCount()).toBe(0);
+
+    d.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("manages user cookies and cascades on user delete", () => {
+    const dir = mkdtempSync(join(tmpdir(), "db-cookies-test-"));
+    const dbPath = join(dir, "bot.db");
+    const d = createDatabase(dbPath);
+
+    // Create a user first (for foreign key)
+    d.db.prepare(
+      "INSERT INTO users (id, username, passwordHash, createdAt, updatedAt, role) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run("user-1", "alice", "hash", Date.now(), Date.now(), "member");
+
+    // Initially null
+    expect(d.getUserCookie("user-1", "netease")).toBeNull();
+    expect(d.getUserCookies("user-1")).toEqual({});
+
+    // Set netease cookie
+    d.setUserCookie("user-1", "netease", "MUSIC_U=12345");
+    expect(d.getUserCookie("user-1", "netease")).toBe("MUSIC_U=12345");
+
+    // Update netease cookie (upsert)
+    d.setUserCookie("user-1", "netease", "MUSIC_U=67890");
+    expect(d.getUserCookie("user-1", "netease")).toBe("MUSIC_U=67890");
+
+    // Set qq cookie
+    d.setUserCookie("user-1", "qq", "uin=123; qm_keyst=abc");
+    const cookies = d.getUserCookies("user-1");
+    expect(cookies.netease?.configured).toBe(true);
+    expect(cookies.qq?.configured).toBe(true);
+    expect(cookies.kugou).toBeUndefined();
+
+    // Delete qq cookie
+    const deleted = d.deleteUserCookie("user-1", "qq");
+    expect(deleted).toBe(true);
+    expect(d.getUserCookie("user-1", "qq")).toBeNull();
+    expect(d.deleteUserCookie("user-1", "qq")).toBe(false);
+
+    // Verify cascade deletion when user is deleted
+    d.db.prepare("DELETE FROM users WHERE id = ?").run("user-1");
+    expect(d.getUserCookie("user-1", "netease")).toBeNull();
+    expect(d.getUserCookies("user-1")).toEqual({});
+
+    d.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
 });
+

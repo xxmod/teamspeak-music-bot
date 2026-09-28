@@ -51,6 +51,15 @@ async function main() {
     logger.error({ reason }, "Unhandled promise rejection");
   });
   const db = createDatabase(DB_PATH);
+  if (config.audioNormalization) {
+    const cleared = db.checkAndSyncTargetLufs(config.audioNormalization.targetLufs);
+    if (cleared) {
+      logger.info(
+        { targetLufs: config.audioNormalization.targetLufs },
+        "Target LUFS in config changed since last run — cleared audio loudness cache",
+      );
+    }
+  }
 
   const apiServer = createApiServerManager(
     {
@@ -67,6 +76,7 @@ async function main() {
 
   const neteaseProvider = new NeteaseProvider(apiServer.getNeteaseBaseUrl());
   const qqProvider = new QQMusicProvider(apiServer.getQQMusicBaseUrl());
+  qqProvider.setLogger(logger.child({ provider: "qq" }));
   const bilibiliProvider = new BiliBiliProvider();
   const localProvider = new LocalMusicProvider(LOCAL_AUDIO_DIR);
   const kugouProvider = new KugouProvider();

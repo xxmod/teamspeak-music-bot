@@ -15,7 +15,7 @@ export interface Song {
   playedAt?: string;
 }
 
-export type Source = 'jellyfin' | 'netease' | 'qq' | 'kugou' | 'spotify';
+export type Source = 'jellyfin' | 'netease' | 'qq' | 'kugou' | 'spotify' | 'bilibili';
 
 export interface BiliPart {
   part: number;
@@ -63,6 +63,7 @@ export interface PlaylistItem {
   coverUrl: string;
   songCount: number;
   platform: string;
+  editable?: boolean;
 }
 
 export interface FavoritePlaylist {
@@ -140,7 +141,7 @@ export const usePlayerStore = defineStore('player', {
     // Home page cache, split by source
     recommendPlaylists: { netease: [] as PlaylistItem[], qq: [] as PlaylistItem[], kugou: [] as PlaylistItem[], spotify: [] as PlaylistItem[] },
     dailySongs:         { netease: [] as Song[],         qq: [] as Song[],         kugou: [] as Song[], spotify: [] as Song[] },
-    userPlaylists:      { jellyfin: [] as PlaylistItem[], netease: [] as PlaylistItem[], qq: [] as PlaylistItem[], kugou: [] as PlaylistItem[], spotify: [] as PlaylistItem[] },
+    userPlaylists:      { jellyfin: [] as PlaylistItem[], netease: [] as PlaylistItem[], qq: [] as PlaylistItem[], kugou: [] as PlaylistItem[], spotify: [] as PlaylistItem[], bilibili: [] as PlaylistItem[] },
     bilibiliPopular: [] as Song[],
     // Jellyfin home sections (shown only when the optional source is enabled)
     jellyfinLatestAlbums: [] as AlbumItem[],
@@ -148,6 +149,7 @@ export const usePlayerStore = defineStore('player', {
     jellyfinFavorites: [] as Song[],
     jellyfinGenres: [] as { id: string; name: string }[],
     authStatus: { jellyfin: false, netease: false, qq: false, kugou: false, spotify: false },
+    userCookies: {} as Record<string, { configured: boolean; updatedAt: number }>,
     lastFetchTime: 0,
 
     // Favorited playlists (fetched from server, isolated per WebUI user)
@@ -155,7 +157,7 @@ export const usePlayerStore = defineStore('player', {
 
     // Transient notification for surfacing failures (e.g., "song not playable")
     // to a global Toast. Bumped `id` triggers re-render of the same message.
-    notification: null as { id: number; message: string; type: 'error' | 'info' } | null,
+    notification: null as { id: number; message: string; type: 'error' | 'info' | 'success' } | null,
 
     // Bilibili 多P分P选择弹窗状态
     biliPartModal: {
@@ -210,11 +212,13 @@ export const usePlayerStore = defineStore('player', {
     /** Sources that are currently logged in. Jellyfin (when enabled) leads. */
     availableSources(): Source[] {
       const s: Source[] = [];
-      if (this.authStatus.jellyfin) s.push('jellyfin');
-      if (this.authStatus.netease) s.push('netease');
-      if (this.authStatus.qq) s.push('qq');
-      if (this.authStatus.kugou) s.push('kugou');
-      if (this.authStatus.spotify) s.push('spotify');
+      const has = (p: string) => this.enabledProviders.includes(p);
+      if (has('jellyfin') && this.authStatus.jellyfin) s.push('jellyfin');
+      if (has('netease') && (this.authStatus.netease || this.userCookies.netease?.configured)) s.push('netease');
+      if (has('qq') && (this.authStatus.qq || this.userCookies.qq?.configured)) s.push('qq');
+      if (has('kugou') && (this.authStatus.kugou || this.userCookies.kugou?.configured)) s.push('kugou');
+      if (has('spotify') && this.authStatus.spotify) s.push('spotify');
+      if (has('bilibili') && this.userCookies.bilibili?.configured) s.push('bilibili');
       return s;
     },
     /** Whether a source is enabled server-side (enabledProviders gate). */
@@ -253,6 +257,28 @@ export const usePlayerStore = defineStore('player', {
 
     getQueueForBot(botId: string): Song[] {
       return this.queues[botId] ?? [];
+    },
+
+    /**
+     * 确保存在活跃的机器人 ID。
+     * 如果未设置，自动回退到第一个已有机器人；若列表为空，主动拉取一次。
+     */
+    async ensureActiveBot(): Promise<string | null> {
+      if (this.activeBotId) return this.activeBotId;
+      if (this.bots.length > 0) {
+        this.activeBotId = this.bots[0].id;
+        return this.activeBotId;
+      }
+      try {
+        await this.fetchBots();
+        if (this.bots.length > 0) {
+          this.activeBotId = this.activeBotId || this.bots[0].id;
+          return this.activeBotId;
+        }
+      } catch {
+        // ignore
+      }
+      return null;
     },
 
     setActiveBotId(id: string) {
@@ -437,7 +463,7 @@ export const usePlayerStore = defineStore('player', {
       this._syncAfterAction();
     },
 
-    notify(message: string, type: 'error' | 'info' = 'info') {
+    notify(message: string, type: 'error' | 'info' | 'success' = 'info') {
       this.notification = { id: Date.now(), message, type };
     },
 
@@ -504,29 +530,44 @@ export const usePlayerStore = defineStore('player', {
     },
 
     async playSong(song: Song, skipPartCheck = false) {
-      if (!this.activeBotId) return;
+      const botId = await this.ensureActiveBot();
+      if (!botId) {
+        this.notify('未检测到可用的音乐机器人，请先确保机器人已启动并连接', 'error');
+        return;
+      }
       if (!skipPartCheck && song.platform === 'bilibili' && !song.id.includes('?p=')) {
         const handled = await this.checkBilibiliMultiPart(song, 'play');
         if (handled) return;
       }
+      this.notify(`正在加载并播放：${song.name} - ${song.artist}`, 'info');
       // Guests use the non-destructive "play now" (insert-next + skip) so they
       // can't wipe everyone else's queue; members/admins keep the normal behavior.
       const endpoint = useSession().isGuest.value ? 'play-now-song' : 'play-song';
-      const res = await axios.post(`/api/player/${this.activeBotId}/${endpoint}`, { song });
-      if (res.data?.ok === false && res.data?.message) {
-        this.notify(res.data.message, 'error');
+      try {
+        const res = await axios.post(`/api/player/${botId}/${endpoint}`, { song });
+        if (res.data?.ok === false && res.data?.message) {
+          this.notify(res.data.message, 'error');
+        } else {
+          this.notify(`正在播放：${song.name} - ${song.artist}`, 'success');
+        }
+        this._setTiming(botId, { serverElapsed: 0 });
+        this._syncAfterAction();
+      } catch (err: any) {
+        this.notify(`播放失败: ${err.response?.data?.error || err.message}`, 'error');
       }
-      this._setTiming(this.activeBotId, { serverElapsed: 0 });
-      this._syncAfterAction();
     },
 
     async playNextSong(song: Song, skipPartCheck = false) {
-      if (!this.activeBotId) return;
+      const botId = await this.ensureActiveBot();
+      if (!botId) {
+        this.notify('未检测到可用的音乐机器人，请先确保机器人已启动并连接', 'error');
+        return;
+      }
       if (!skipPartCheck && song.platform === 'bilibili' && !song.id.includes('?p=')) {
         const handled = await this.checkBilibiliMultiPart(song, 'playNext');
         if (handled) return;
       }
-      const res = await axios.post(`/api/player/${this.activeBotId}/play-next-song`, { song });
+      const res = await axios.post(`/api/player/${botId}/play-next-song`, { song });
       if (res.data?.message) {
         this.notify(res.data.message, res.data.ok === false ? 'error' : 'info');
       }
@@ -535,32 +576,40 @@ export const usePlayerStore = defineStore('player', {
     },
 
     async addToQueue(query: string, platform = 'netease') {
-      if (!this.activeBotId) return;
-      await axios.post(`/api/player/${this.activeBotId}/add`, { query, platform });
+      const botId = await this.ensureActiveBot();
+      if (!botId) return;
+      await axios.post(`/api/player/${botId}/add`, { query, platform });
     },
 
     async addToQueueById(songId: string, platform = 'netease') {
-      if (!this.activeBotId) return;
-      await axios.post(`/api/player/${this.activeBotId}/add-by-id`, { songId, platform });
+      const botId = await this.ensureActiveBot();
+      if (!botId) return;
+      await axios.post(`/api/player/${botId}/add-by-id`, { songId, platform });
     },
 
     async addSong(song: Song, skipPartCheck = false) {
-      if (!this.activeBotId) return;
+      const botId = await this.ensureActiveBot();
+      if (!botId) return;
       if (!skipPartCheck && song.platform === 'bilibili' && !song.id.includes('?p=')) {
         const handled = await this.checkBilibiliMultiPart(song, 'add');
         if (handled) return;
       }
-      await axios.post(`/api/player/${this.activeBotId}/add-song`, { song });
+      await axios.post(`/api/player/${botId}/add-song`, { song });
     },
 
     async playPlaylist(playlistId: string, platform = 'netease') {
-      if (!this.activeBotId) return;
+      const botId = await this.ensureActiveBot();
+      if (!botId) {
+        this.notify('未检测到可用的音乐机器人，请先确保机器人已启动并连接', 'error');
+        return;
+      }
+      this.notify('正在加载并播放歌单...', 'info');
       try {
-        const res = await axios.post(`/api/player/${this.activeBotId}/play-playlist`, { playlistId, platform });
+        const res = await axios.post(`/api/player/${botId}/play-playlist`, { playlistId, platform });
         if (res.data?.message) {
-          this.notify(res.data.message, res.data.ok === false ? 'error' : 'info');
+          this.notify(res.data.message, res.data.ok === false ? 'error' : 'success');
         }
-        this._setTiming(this.activeBotId, { serverElapsed: 0 });
+        this._setTiming(botId, { serverElapsed: 0 });
         this._syncAfterAction();
       } catch (e: any) {
         // A 403 here means a guest lacks the "play entire collection" permission
@@ -571,10 +620,11 @@ export const usePlayerStore = defineStore('player', {
 
     async playAlbum(albumId: string, platform = 'netease') {
       if (!this.activeBotId) return;
+      this.notify('正在加载并播放专辑...', 'info');
       try {
         const res = await axios.post(`/api/player/${this.activeBotId}/play-album`, { albumId, platform });
         if (res.data?.message) {
-          this.notify(res.data.message, res.data.ok === false ? 'error' : 'info');
+          this.notify(res.data.message, res.data.ok === false ? 'error' : 'success');
         }
         this._setTiming(this.activeBotId, { serverElapsed: 0 });
         this._syncAfterAction();
@@ -650,14 +700,31 @@ export const usePlayerStore = defineStore('player', {
     },
 
     async startFm(platform: Source = 'netease') {
-      if (!this.activeBotId) return;
-      const res = await axios.post(`/api/player/${this.activeBotId}/fm`, { platform });
-      if (res.data?.message) {
-        this.notify(res.data.message, res.data.ok === false ? 'error' : 'info');
+      const botId = await this.ensureActiveBot();
+      if (!botId) {
+        this.notify('未检测到可用的音乐机器人，请先确保机器人已启动并连接', 'error');
+        return;
       }
-      this._setTiming(this.activeBotId, { serverElapsed: 0 });
-      this._syncAfterAction();
-      this.fetchQueue();
+      const platformLabels: Record<string, string> = {
+        netease: '网易云私人 FM',
+        qq: 'QQ 音乐雷达',
+        kugou: '酷狗私人电台',
+        jellyfin: 'Jellyfin 即时漫游',
+      };
+      const label = platformLabels[platform] || '私人 FM';
+      this.notify(`正在开启 ${label}，正在获取推荐曲目...`, 'info');
+      try {
+        const res = await axios.post(`/api/player/${botId}/fm`, { platform });
+        if (res.data?.message) {
+          const isError = res.data.ok === false;
+          this.notify(res.data.message, isError ? 'error' : 'success');
+        }
+        this._setTiming(botId, { serverElapsed: 0 });
+        this._syncAfterAction();
+        this.fetchQueue();
+      } catch (err: any) {
+        this.notify(`开启 ${label} 失败: ${err.response?.data?.error || err.message}`, 'error');
+      }
     },
 
     async fetchFavorites() {
@@ -735,15 +802,16 @@ export const usePlayerStore = defineStore('player', {
       // Pre-rejected sentinel: mark handled so it never surfaces as unhandled.
       skip.catch(() => {});
 
-      // Always check auth status first — if it changed since the cached
-      // fetch (e.g., user logged in/out as a different account), the
+      // Always check auth status and user cookies first — if either changed since the cached
+      // fetch (e.g., user logged in/out or updated personal cookie), the
       // cached playlists belong to a different user and we MUST refetch.
-      const [jfAuthRes, neAuthRes, qqAuthRes, kugouAuthRes, spAuthRes] = await Promise.allSettled([
+      const [jfAuthRes, neAuthRes, qqAuthRes, kugouAuthRes, spAuthRes, userCookiesRes] = await Promise.allSettled([
         has('jellyfin') ? axios.get('/api/auth/status', { params: { platform: 'jellyfin' } }) : skip,
         has('netease') ? axios.get('/api/auth/status', { params: { platform: 'netease' } }) : skip,
         has('qq') ? axios.get('/api/auth/status', { params: { platform: 'qq' } }) : skip,
         has('kugou') ? axios.get('/api/auth/status', { params: { platform: 'kugou' } }) : skip,
         has('spotify') ? axios.get('/api/auth/status', { params: { platform: 'spotify' } }) : skip,
+        axios.get('/api/user/cookies'),
       ]);
       const newAuth = {
         jellyfin: jfAuthRes.status === 'fulfilled' && !!jfAuthRes.value.data?.loggedIn,
@@ -752,12 +820,18 @@ export const usePlayerStore = defineStore('player', {
         kugou:   kugouAuthRes.status === 'fulfilled' && !!kugouAuthRes.value.data?.loggedIn,
         spotify: spAuthRes.status === 'fulfilled' && !!spAuthRes.value.data?.loggedIn,
       };
+      const oldCookiesJson = JSON.stringify(this.userCookies);
+      const newUserCookies = userCookiesRes.status === 'fulfilled' ? (userCookiesRes.value.data?.cookies ?? {}) : this.userCookies;
+      const userCookiesChanged = JSON.stringify(newUserCookies) !== oldCookiesJson;
+      this.userCookies = newUserCookies;
+
       const authChanged =
         newAuth.jellyfin !== this.authStatus.jellyfin ||
         newAuth.netease !== this.authStatus.netease ||
         newAuth.qq !== this.authStatus.qq ||
         newAuth.kugou !== this.authStatus.kugou ||
-        newAuth.spotify !== this.authStatus.spotify;
+        newAuth.spotify !== this.authStatus.spotify ||
+        userCookiesChanged;
       this.authStatus.jellyfin = newAuth.jellyfin;
       this.authStatus.netease = newAuth.netease;
       this.authStatus.qq = newAuth.qq;
@@ -793,9 +867,8 @@ export const usePlayerStore = defineStore('player', {
             Promise.resolve(emptyPlaylists),
           ];
 
-      // 3. QQ data: only fetch when QQ is logged in. When not logged in,
-      // resolve to empty payloads so the same indexed handling works.
-      const qqPromises = has('qq') && this.authStatus.qq
+      // 3. QQ data: fetch when QQ is logged in globally OR user configured personal cookie
+      const qqPromises = has('qq') && (this.authStatus.qq || this.userCookies.qq?.configured)
         ? [
             axios.get('/api/music/recommend/playlists', { params: { platform: 'qq' } }),
             axios.get('/api/music/recommend/songs',     { params: { platform: 'qq' } }),
@@ -807,9 +880,8 @@ export const usePlayerStore = defineStore('player', {
             Promise.resolve(emptyPlaylists),
           ];
 
-      // 4. Kugou data: every section (incl. recommend playlists) needs login,
-      // so gate all three on auth like QQ.
-      const kugouPromises = has('kugou') && this.authStatus.kugou
+      // 4. Kugou data: fetch when Kugou is logged in globally OR user configured personal cookie
+      const kugouPromises = has('kugou') && (this.authStatus.kugou || this.userCookies.kugou?.configured)
         ? [
             axios.get('/api/music/recommend/playlists', { params: { platform: 'kugou' } }),
             axios.get('/api/music/recommend/songs',     { params: { platform: 'kugou' } }),
@@ -821,9 +893,17 @@ export const usePlayerStore = defineStore('player', {
             Promise.resolve(emptyPlaylists),
           ];
 
-      const biliPromise = has('bilibili')
-        ? axios.get('/api/music/bilibili/popular?limit=12')
-        : Promise.resolve(emptySongs);
+      const biliPromises = has('bilibili')
+        ? [
+            axios.get('/api/music/bilibili/popular?limit=12'),
+            this.userCookies.bilibili?.configured
+              ? axios.get('/api/music/user/playlists', { params: { platform: 'bilibili' } })
+              : Promise.resolve(emptyPlaylists),
+          ]
+        : [
+            Promise.resolve(emptySongs),
+            Promise.resolve(emptyPlaylists),
+          ];
 
       // 5. Jellyfin home sections. Favorites are guest-blocked server-side;
       // allSettled turns that 403 into an empty section.
@@ -847,11 +927,11 @@ export const usePlayerStore = defineStore('player', {
         ...neteasePromises,
         ...qqPromises,
         ...kugouPromises,
-        biliPromise,
+        ...biliPromises,
         ...jellyfinPromises,
       ]);
 
-      const [neRecPL, neDaily, neUserPL, qqRecPL, qqDaily, qqUserPL, kgRecPL, kgDaily, kgUserPL, bili,
+      const [neRecPL, neDaily, neUserPL, qqRecPL, qqDaily, qqUserPL, kgRecPL, kgDaily, kgUserPL, bili, biliUserPL,
         jfLatest, jfMost, jfFav, jfGenres, jfUserPL] = results;
 
       this.jellyfinLatestAlbums =
@@ -888,6 +968,8 @@ export const usePlayerStore = defineStore('player', {
       if (bili.status === 'fulfilled') {
         this.bilibiliPopular = bili.value.data.songs ?? [];
       }
+      this.userPlaylists.bilibili =
+        biliUserPL && biliUserPL.status === 'fulfilled' ? (biliUserPL.value.data.playlists ?? []) : [];
 
       // Only mark as fetched if at least the auth-status calls succeeded —
       // a fully failed fetch (network blip / server down) should NOT be
@@ -928,6 +1010,21 @@ export const usePlayerStore = defineStore('player', {
         this.fetchQueue();
       } catch {
         this.notify('播放流派失败', 'error');
+      }
+    },
+
+    invalidateHomeCache() {
+      this.lastFetchTime = 0;
+    },
+
+    async fetchUserCookies() {
+      try {
+        const res = await axios.get('/api/user/cookies');
+        if (res.data?.cookies) {
+          this.userCookies = res.data.cookies;
+        }
+      } catch {
+        // Guest or unauthenticated, ignore
       }
     },
   },

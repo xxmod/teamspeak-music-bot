@@ -742,4 +742,43 @@ describe("PlayQueue", () => {
       expect(queue.current()?.id).toBe("a");
     });
   });
+
+  describe("peekNext", () => {
+    it("returns null when queue is empty", () => {
+      expect(queue.peekNext()).toBeNull();
+    });
+
+    it("returns next song in Sequential mode without moving index", () => {
+      queue.setMode(PlayMode.Sequential);
+      queue.add(makeSong("a"));
+      queue.add(makeSong("b"));
+      queue.play(); // current: a
+      expect(queue.peekNext()?.id).toBe("b");
+      expect(queue.current()?.id).toBe("a"); // index unchanged
+      expect(queue.getCurrentIndex()).toBe(0);
+
+      queue.next(); // current: b
+      expect(queue.peekNext()).toBeNull(); // at end of queue
+    });
+
+    it("loops around in Loop mode", () => {
+      queue.setMode(PlayMode.Loop);
+      queue.add(makeSong("a"));
+      queue.add(makeSong("b"));
+      queue.play(); // current: a
+      expect(queue.peekNext()?.id).toBe("b");
+      queue.next(); // current: b
+      expect(queue.peekNext()?.id).toBe("a"); // loops back to a
+    });
+
+    it("peeks forwardStack if next song was added via addNext in random mode", () => {
+      queue.setMode(PlayMode.Random);
+      queue.add(makeSong("a"));
+      queue.add(makeSong("b"));
+      queue.play(); // current: a
+      queue.addNext(makeSong("vip"));
+      expect(queue.peekNext()?.id).toBe("vip");
+      expect(queue.next()?.id).toBe("vip");
+    });
+  });
 });

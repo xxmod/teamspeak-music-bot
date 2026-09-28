@@ -390,25 +390,86 @@ export class BotProfileManager {
   }
 
   /**
-   * Build a nickname string that fits within TS3_NICKNAME_MAX.
-   * Uses UTF-8 byte length for the limit since TS3 counts bytes,
-   * not characters.
+   * 构建播放时的机器人昵称。
+   * 规则：
+   * 1. 包含前缀 "♪ "。
+   * 2. 按照整串（歌名 - 作者名）做长度限制，但中间的连接符 " - " 不计入字数。
+   * 3. 限制为 12 个中文字符宽度（1 个汉字计 1 字符宽度/2 权重，2 个英文字符计 1 字符宽度/1 权重，上限为 24 权重）。
+   * 4. 超过限制时截断并在末尾追加 "..."。
+   * 5. 严格保证最终拼接字符串长度不超过 TS3 服务器限制（TS3_NICKNAME_MAX = 30），
+   *    避免因英文合作曲/长歌手名导致服务端直接拒绝改名指令。
    */
   private buildNickname(song: QueuedSong): string | null {
-    const songInfo = `${song.name} - ${song.artist}`;
     const prefix = "\u266A "; // ♪
     const sep = " - ";
-    const suffix = `${sep}${this.defaultNickname}`;
+    const maxWeight = 24; // 12 个中文字符宽度，每个汉字/全角权重 2，半角/英文权重 1
 
-    const overheadBytes = Buffer.byteLength(prefix, "utf8") + Buffer.byteLength(suffix, "utf8");
-    if (overheadBytes >= TS3_NICKNAME_MAX) {
-      // Default nickname alone is too long with decoration — skip
-      return null;
+    const getCharWeight = (ch: string): number => {
+      const code = ch.codePointAt(0) ?? 0;
+      return code <= 0x7f ? 1 : 2;
+    };
+
+    const sliceByLimit = (
+      str: string,
+      weightLimit: number,
+      charLimit: number = Number.POSITIVE_INFINITY,
+    ) => {
+      let currentWeight = 0;
+      let end = 0;
+      for (const ch of str) {
+        const w = getCharWeight(ch);
+        if (currentWeight + w > weightLimit || end + ch.length > charLimit) {
+          return { text: str.slice(0, end), weight: currentWeight, truncated: true };
+        }
+        currentWeight += w;
+        end += ch.length;
+      }
+      return { text: str, weight: currentWeight, truncated: false };
+    };
+
+    const name = song.name || "";
+    const artist = song.artist || "";
+
+    // 1. 检查歌名部分（最多 24 权重；若截断，加 prefix(2) 和 "...(3)" 后最多可容纳 30 - 2 - 3 = 25 字符）
+    const nameMaxChars = TS3_NICKNAME_MAX - prefix.length - 3;
+    const nameRes = sliceByLimit(name, maxWeight, nameMaxChars);
+    if (nameRes.truncated) {
+      return `${prefix}${nameRes.text}...`;
     }
 
-    const maxSongBytes = TS3_NICKNAME_MAX - overheadBytes;
-    const truncated = this.truncateUtf8(songInfo, maxSongBytes);
-    return `${prefix}${truncated}${suffix}`;
+    // 若无作者名，则完整输出歌名（24权重最长24英文字符，24 + 2 = 26 <= 30）
+    if (!artist) {
+      return `${prefix}${nameRes.text}`;
+    }
+
+    // 2. 检查作者名部分：
+    //    剩余权重 = 24 - 歌名权重
+    //    同时为确保整串带上 "...(3)" 后不超过 TS3_NICKNAME_MAX (30)：
+    //    作者名截断时最大允许字符数 = TS3_NICKNAME_MAX - prefix.length - name.length - sep.length - 3
+    const remainingWeight = maxWeight - nameRes.weight;
+    const maxArtistChars = Math.max(
+      0,
+      TS3_NICKNAME_MAX - prefix.length - name.length - sep.length - 3,
+    );
+
+    const artistRes = sliceByLimit(artist, remainingWeight, maxArtistChars);
+    let result: string;
+    if (artistRes.truncated) {
+      if (artistRes.text.length > 0) {
+        result = `${prefix}${name}${sep}${artistRes.text}...`;
+      } else {
+        result = `${prefix}${name}...`;
+      }
+    } else {
+      result = `${prefix}${name}${sep}${artist}`;
+    }
+
+    // 终极安全防线：保证绝对不超过 TS3_NICKNAME_MAX
+    if (result.length > TS3_NICKNAME_MAX) {
+      result = result.slice(0, TS3_NICKNAME_MAX - 3) + "...";
+    }
+
+    return result;
   }
 
   /**

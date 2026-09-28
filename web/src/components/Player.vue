@@ -40,6 +40,18 @@
         <span class="time-display time-current">{{ formatTime(currentElapsed) }}</span>
         <!-- Transport controls: per-button gating honoring guest flags -->
         <template v-if="canControl || canTransport || canSkip || canModeCtl">
+          <!-- 上一首歌按钮左侧：我喜爱按钮 -->
+          <button
+            v-if="canLikeAndCollect"
+            class="control-btn like-btn"
+            :class="{ liked: isLiked }"
+            :disabled="likeLoading"
+            @click="toggleLike"
+            :title="isLiked ? '已在喜爱歌单（点击取消）' : '添加到我喜欢'"
+          >
+            <Icon :icon="isLiked ? 'mdi:heart' : 'mdi:heart-outline'" />
+          </button>
+
           <button v-if="canControl" class="control-btn" @click="store.prev()">
             <Icon icon="mdi:skip-previous" />
           </button>
@@ -49,6 +61,17 @@
           <button v-if="canSkip" class="control-btn" @click="store.next()">
             <Icon icon="mdi:skip-next" />
           </button>
+
+          <!-- 下一首歌按钮右侧：添加到歌单加号按钮 -->
+          <button
+            v-if="canLikeAndCollect"
+            class="control-btn add-btn"
+            @click="addToPlaylistOpen = true"
+            title="添加到歌单"
+          >
+            <Icon icon="mdi:playlist-plus" />
+          </button>
+
           <button v-if="canModeCtl" class="control-btn mode-btn" @click="cycleMode" :title="modeLabel">
             <Icon :icon="modeIcon" />
             <span class="mode-label">{{ modeLabel }}</span>
@@ -82,22 +105,30 @@
         </button>
       </div>
     </div>
+
+    <!-- 添加到歌单弹窗 -->
+    <AddToPlaylistModal v-model="addToPlaylistOpen" :song="store.currentSong" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from 'vue';
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
 import { Icon } from '@iconify/vue';
 import { useRoute, useRouter } from 'vue-router';
+import axios from 'axios';
 import { usePlayerStore } from '../stores/player.js';
 import { useSession } from '../composables/useSession.js';
 import { useDecoupledSlider } from '../composables/useDecoupledSlider.js';
 import CoverArt from './CoverArt.vue';
 import Queue from './Queue.vue';
+import AddToPlaylistModal from './AddToPlaylistModal.vue';
 
 const route = useRoute();
 const router = useRouter();
 const showQueue = ref(false);
+const addToPlaylistOpen = ref(false);
+const isLiked = ref(false);
+const likeLoading = ref(false);
 
 const { can, guestCan } = useSession();
 const canControl = computed(() => can('player.control'));
@@ -109,6 +140,42 @@ const store = usePlayerStore();
 const activeBot = computed(() => store.activeBot);
 const currentSong = computed(() => store.currentSong);
 const showBotBadge = computed(() => store.bots.length > 1);
+
+const canLikeAndCollect = computed(() => {
+  const s = store.currentSong;
+  if (!s || !s.platform) return false;
+  if (s.platform === 'bilibili' || s.platform === 'local' || s.platform === 'youtube') return false;
+  const hasUserCookie = Boolean(store.userCookies[s.platform]?.configured);
+  const hasGlobalAuth = Boolean(store.authStatus[s.platform]);
+  return (hasUserCookie || hasGlobalAuth) && store.sourceEnabled(s.platform);
+});
+
+watch(
+  () => store.currentSong?.id,
+  () => {
+    isLiked.value = false;
+  }
+);
+
+async function toggleLike() {
+  const s = store.currentSong;
+  if (!s || likeLoading.value) return;
+  likeLoading.value = true;
+  try {
+    const newLike = !isLiked.value;
+    await axios.post('/api/music/song/like', {
+      platform: s.platform,
+      songId: s.id,
+      like: newLike,
+    });
+    isLiked.value = newLike;
+    store.notify(newLike ? `已将《${s.name}》添加到我喜欢` : `已将《${s.name}》从我喜欢移除`, 'info');
+  } catch (err: any) {
+    store.notify(err?.response?.data?.error || '操作失败', 'error');
+  } finally {
+    likeLoading.value = false;
+  }
+}
 
 function toggleLyrics() {
   if (route.path === '/lyrics') {
@@ -403,6 +470,39 @@ function cycleMode() {
   transition: opacity var(--transition-fast);
   &:hover { opacity: 1; }
   &.active { opacity: 1; color: var(--color-primary); }
+}
+
+.like-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  opacity: 0.85;
+  transition: all var(--transition-fast);
+  &.liked {
+    opacity: 1;
+    color: #ff4757;
+    filter: drop-shadow(0 0 4px rgba(255, 71, 87, 0.4));
+  }
+  &:hover {
+    opacity: 1;
+    color: #ff4757;
+    transform: scale(1.1);
+  }
+}
+
+.add-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 21px;
+  opacity: 0.85;
+  transition: all var(--transition-fast);
+  &:hover {
+    opacity: 1;
+    color: var(--color-primary);
+    transform: scale(1.1);
+  }
 }
 
 .mode-btn {

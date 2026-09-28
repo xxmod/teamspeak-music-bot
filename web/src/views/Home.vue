@@ -21,45 +21,85 @@
     <!-- 私人FM（音源按 enabledProviders 门控；Jellyfin 电台优先） -->
     <section v-if="fmCardCount > 0" class="section">
       <h2 class="section-title">私人FM</h2>
-      <div v-if="enabled('jellyfin')" class="fm-card hover-scale" @click="playFm('jellyfin')">
+      <div
+        v-if="enabled('jellyfin')"
+        class="fm-card hover-scale"
+        :class="{ 'is-loading': fmLoading === 'jellyfin' }"
+        @click="playFm('jellyfin')"
+      >
         <div class="fm-icon-wrapper jellyfin">
           <Icon icon="mdi:jellyfish" class="fm-icon" />
         </div>
         <div class="fm-info">
           <div class="fm-title">Jellyfin 电台</div>
-          <div class="fm-desc">从收藏出发的 Instant Mix 歌曲流</div>
+          <div class="fm-desc">{{ fmLoading === 'jellyfin' ? '正在连接播放器与获取推荐...' : '从收藏出发的 Instant Mix 歌曲流' }}</div>
         </div>
-        <Icon icon="mdi:play-circle" class="fm-play-icon" />
+        <div v-if="fmLoading === 'jellyfin'" class="fm-spinner" title="正在缓冲..."></div>
+        <Icon
+          v-else
+          icon="mdi:play-circle"
+          class="fm-play-icon"
+        />
       </div>
-      <div v-if="enabled('netease')" class="fm-card hover-scale" @click="playFm('netease')">
+      <div
+        v-if="enabled('netease')"
+        class="fm-card hover-scale"
+        :class="{ 'is-loading': fmLoading === 'netease' }"
+        @click="playFm('netease')"
+      >
         <div class="fm-icon-wrapper">
           <Icon icon="mdi:radio" class="fm-icon" />
         </div>
         <div class="fm-info">
           <div class="fm-title">开启私人FM</div>
-          <div class="fm-desc">根据你的口味推荐音乐</div>
+          <div class="fm-desc">{{ fmLoading === 'netease' ? '正在连接播放器与获取推荐...' : '根据你的口味推荐音乐' }}</div>
         </div>
-        <Icon icon="mdi:play-circle" class="fm-play-icon" />
+        <div v-if="fmLoading === 'netease'" class="fm-spinner" title="正在缓冲..."></div>
+        <Icon
+          v-else
+          icon="mdi:play-circle"
+          class="fm-play-icon"
+        />
       </div>
-      <div v-if="enabled('qq') && store.authStatus.qq" class="fm-card hover-scale" @click="playFm('qq')">
+      <div
+        v-if="enabled('qq') && (store.authStatus.qq || store.userCookies.qq?.configured)"
+        class="fm-card hover-scale"
+        :class="{ 'is-loading': fmLoading === 'qq' }"
+        @click="playFm('qq')"
+      >
         <div class="fm-icon-wrapper qq">
           <Icon icon="mdi:radar" class="fm-icon" />
         </div>
         <div class="fm-info">
           <div class="fm-title">QQ音乐雷达</div>
-          <div class="fm-desc">猜你喜欢 / 雷达推荐歌曲流</div>
+          <div class="fm-desc">{{ fmLoading === 'qq' ? '正在连接播放器与获取推荐...' : '猜你喜欢 / 雷达推荐歌曲流' }}</div>
         </div>
-        <Icon icon="mdi:play-circle" class="fm-play-icon" />
+        <div v-if="fmLoading === 'qq'" class="fm-spinner" title="正在缓冲..."></div>
+        <Icon
+          v-else
+          icon="mdi:play-circle"
+          class="fm-play-icon"
+        />
       </div>
-      <div v-if="enabled('kugou') && store.authStatus.kugou" class="fm-card hover-scale" @click="playFm('kugou')">
+      <div
+        v-if="enabled('kugou') && (store.authStatus.kugou || store.userCookies.kugou?.configured)"
+        class="fm-card hover-scale"
+        :class="{ 'is-loading': fmLoading === 'kugou' }"
+        @click="playFm('kugou')"
+      >
         <div class="fm-icon-wrapper kugou">
           <Icon icon="mdi:radio-tower" class="fm-icon" />
         </div>
         <div class="fm-info">
           <div class="fm-title">酷狗私人电台</div>
-          <div class="fm-desc">个性化推荐歌曲流</div>
+          <div class="fm-desc">{{ fmLoading === 'kugou' ? '正在连接播放器与获取推荐...' : '个性化推荐歌曲流' }}</div>
         </div>
-        <Icon icon="mdi:play-circle" class="fm-play-icon" />
+        <div v-if="fmLoading === 'kugou'" class="fm-spinner" title="正在缓冲..."></div>
+        <Icon
+          v-else
+          icon="mdi:play-circle"
+          class="fm-play-icon"
+        />
       </div>
     </section>
 
@@ -261,26 +301,26 @@ const userPlaylistsExpanded = ref(false);
 const enabled = (p: string) => store.enabledProviders.includes(p);
 const fmCardCount = computed(() =>
   ['jellyfin', 'netease'].filter(enabled).length +
-  (enabled('qq') && store.authStatus.qq ? 1 : 0) +
-  (enabled('kugou') && store.authStatus.kugou ? 1 : 0),
+  (enabled('qq') && (store.authStatus.qq || store.userCookies.qq?.configured) ? 1 : 0) +
+  (enabled('kugou') && (store.authStatus.kugou || store.userCookies.kugou?.configured) ? 1 : 0),
 );
 
 // Available sources per section. Jellyfin has no daily/recommend concept —
 // it gets its own home sections instead — so those two tab bars only ever
 // carry the legacy sources (which is also what their store maps are keyed by).
-type LegacySource = Exclude<Source, 'jellyfin'>;
+type LegacySource = Exclude<Source, 'jellyfin' | 'bilibili'>;
 
 // Recommend playlists work anonymously on netease (when enabled);
-// QQ requires login. This intentionally differs from dailyAvailable/userAvailable.
+// QQ requires login or user cookie. This intentionally differs from dailyAvailable/userAvailable.
 const recommendAvailable = computed<LegacySource[]>(() => {
   const s: LegacySource[] = [];
   if (enabled('netease')) s.push('netease');
-  if (enabled('qq') && store.authStatus.qq) s.push('qq');
-  if (enabled('kugou') && store.authStatus.kugou) s.push('kugou');
+  if (enabled('qq') && (store.authStatus.qq || store.userCookies.qq?.configured)) s.push('qq');
+  if (enabled('kugou') && (store.authStatus.kugou || store.userCookies.kugou?.configured)) s.push('kugou');
   return s;
 });
 const dailyAvailable = computed<LegacySource[]>(() =>
-  store.availableSources.filter((s): s is LegacySource => s !== 'jellyfin'),
+  store.availableSources.filter((s): s is LegacySource => s !== 'jellyfin' && s !== 'bilibili'),
 );
 const userAvailable = computed<Source[]>(() => store.availableSources);
 
@@ -317,8 +357,16 @@ const visibleUserPlaylists = computed(() =>
     : currentUserPlaylists.value.slice(0, USER_PLAYLIST_LIMIT)
 );
 
+const fmLoading = ref<string | null>(null);
+
 async function playFm(platform: Source) {
-  await store.startFm(platform);
+  if (fmLoading.value) return;
+  fmLoading.value = platform;
+  try {
+    await store.startFm(platform);
+  } finally {
+    fmLoading.value = null;
+  }
 }
 
 onMounted(() => {
@@ -500,10 +548,33 @@ onMounted(() => {
   color: var(--color-primary);
   opacity: 0.8;
   transition: opacity var(--transition-fast);
+  flex-shrink: 0;
 
   .fm-card:hover & {
     opacity: 1;
   }
+}
+
+.fm-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--color-primary-15, rgba(255, 255, 255, 0.2));
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: fm-spinner-rotate 0.8s linear infinite;
+  flex-shrink: 0;
+  margin-right: 4px;
+}
+
+.fm-card.is-loading {
+  opacity: 0.85;
+  cursor: wait;
+  pointer-events: none;
+}
+
+@keyframes fm-spinner-rotate {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 // 每日推荐

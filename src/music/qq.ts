@@ -1,4 +1,5 @@
 import axios, { type AxiosInstance } from "axios";
+import type { Logger } from "../logger.js";
 import type {
   MusicProvider,
   Song,
@@ -105,12 +106,41 @@ export class QQMusicProvider implements MusicProvider {
   private cookie = "";
   private quality = "exhigh";
   private radarPage = 1;
+  private logger?: Logger;
 
   constructor(baseUrl: string) {
     this.api = axios.create({
       baseURL: baseUrl,
       timeout: 10000,
     });
+  }
+
+  setLogger(logger: Logger): void {
+    this.logger = logger;
+  }
+
+  private logInfo(obj: Record<string, unknown>, msg: string): void {
+    if (this.logger) {
+      this.logger.info(obj, msg);
+    } else {
+      console.log(`[QQMusicProvider] ${msg}`, JSON.stringify(obj));
+    }
+  }
+
+  private logWarn(obj: Record<string, unknown>, msg: string): void {
+    if (this.logger) {
+      this.logger.warn(obj, msg);
+    } else {
+      console.warn(`[QQMusicProvider] ${msg}`, JSON.stringify(obj));
+    }
+  }
+
+  private logError(obj: Record<string, unknown>, msg: string): void {
+    if (this.logger) {
+      this.logger.error(obj, msg);
+    } else {
+      console.error(`[QQMusicProvider] ${msg}`, JSON.stringify(obj));
+    }
   }
 
   setQuality(quality: string): void {
@@ -125,13 +155,24 @@ export class QQMusicProvider implements MusicProvider {
     return this.cookie ? { cookie: this.cookie } : {};
   }
 
+  private getCookieParams(cookieOverride?: string): Record<string, string> {
+    const c = cookieOverride !== undefined ? cookieOverride : this.cookie;
+    return c ? { cookie: c } : {};
+  }
+
   private get directCookieHeaders(): Record<string, string> {
     return this.cookie ? { Cookie: this.cookie } : {};
   }
 
-  private buildMusicuPayload(module: string, method: string, param: Record<string, unknown>): Record<string, unknown> {
-    const uinMatch = /(?:^|; )(?:uin|qqmusic_uin)=o?0?(\d+)/.exec(this.cookie);
-    const pSkeyMatch = /(?:^|; )p_skey=([^;]+)/.exec(this.cookie);
+  private getDirectCookieHeaders(cookieOverride?: string): Record<string, string> {
+    const c = cookieOverride !== undefined ? cookieOverride : this.cookie;
+    return c ? { Cookie: c } : {};
+  }
+
+  private buildMusicuPayload(module: string, method: string, param: Record<string, unknown>, cookieOverride?: string): Record<string, unknown> {
+    const c = cookieOverride !== undefined ? cookieOverride : this.cookie;
+    const uinMatch = /(?:^|; )(?:uin|superuin|p_uin|wxuin|qqmusic_uin)=o?0?(\d+)/.exec(c);
+    const pSkeyMatch = /(?:^|; )p_skey=([^;]+)/.exec(c);
     return {
       comm: {
         ct: 24,
@@ -530,6 +571,32 @@ export class QQMusicProvider implements MusicProvider {
     return "waiting";
   }
 
+  async checkQrCodeForCookie(
+    key: string
+  ): Promise<{ status: "waiting" | "scanned" | "confirmed" | "expired"; cookie?: string }> {
+    const [qrsig, ptqrtoken] = key.split("|");
+    if (!qrsig || !ptqrtoken) return { status: "expired" };
+
+    let res;
+    try {
+      res = await this.api.post("/checkQQLoginQr", null, {
+        params: { qrsig, ptqrtoken },
+      });
+    } catch {
+      return { status: "expired" };
+    }
+
+    const body = res.data;
+    if (body?.isOk === true) {
+      const cookie: string = body.session?.cookie ?? "";
+      return { status: "confirmed", cookie };
+    }
+    if (body?.refresh === true) return { status: "expired" };
+    if (typeof body?.message === "string" && body.message.includes("未扫描"))
+      return { status: "waiting" };
+    return { status: "waiting" };
+  }
+
   setCookie(cookie: string): void {
     this.cookie = cookie;
     // Reset radar pagination so a re-login (different account) starts from the
@@ -541,6 +608,12 @@ export class QQMusicProvider implements MusicProvider {
     return this.cookie;
   }
 
+  private parseUin(cookieOverride?: string): string {
+    const c = cookieOverride !== undefined ? cookieOverride : this.cookie;
+    const match = /(?:^|; )(?:uin|superuin|p_uin|wxuin|qqmusic_uin)=o?0?(\d+)/.exec(c || "");
+    return match ? match[1] : "";
+  }
+
   async getAuthStatus(): Promise<AuthStatus> {
     if (!this.cookie) return { loggedIn: false };
     // /getUserAvatar in @sansenjian/qq-music-api 2.x is NOT registered on
@@ -549,13 +622,7 @@ export class QQMusicProvider implements MusicProvider {
     // cookie against QQ. Round-trip through /user/getUserPlaylists which
     // actually hits QQ Music with the cookie; if the upstream returns
     // code=0, the cookie is valid.
-    //
-    // IMPORTANT: /user/getUserPlaylists requires `uin` as a query param —
-    // the library 400s with "缺少 uin 参数" otherwise. Parse it out of the
-    // cookie (uin=<qq>; comes after the various *uin prefixed names, which
-    // is why the regex anchors on a word boundary).
-    const uinMatch = /(?:^|; )uin=o?0?(\d+)/.exec(this.cookie);
-    const uin = uinMatch ? uinMatch[1] : "";
+    const uin = this.parseUin();
     if (!uin) return { loggedIn: false };
     try {
       const res = await this.api.get("/user/getUserPlaylists", {
@@ -572,12 +639,12 @@ export class QQMusicProvider implements MusicProvider {
     }
   }
 
-  async getDailyRecommendSongs(): Promise<Song[]> {
+  async getDailyRecommendSongs(cookieOverride?: string): Promise<Song[]> {
     // QQ has no per-user daily list; use newsong.NewSongServer (新歌速递)
     // as the closest analogue. Returns ~20 newly-released songs.
     try {
       const res = await this.api.get("/getNewSongs", {
-        params: { ...this.cookieParams },
+        params: { ...this.getCookieParams(cookieOverride) },
       });
       const list: any[] = res.data?.response?.new_song?.data?.songlist ?? [];
       return list.map((s: any) => ({
@@ -597,13 +664,13 @@ export class QQMusicProvider implements MusicProvider {
     }
   }
 
-  async getPersonalFm(): Promise<Song[]> {
-    const radarSongs = await this.getRadarRecommendSongs();
+  async getPersonalFm(cookieOverride?: string): Promise<Song[]> {
+    const radarSongs = await this.getRadarRecommendSongs(cookieOverride);
     if (radarSongs.length > 0) return radarSongs;
-    return this.getGuessRecommendSongs();
+    return this.getGuessRecommendSongs(cookieOverride);
   }
 
-  private async getRadarRecommendSongs(): Promise<Song[]> {
+  private async getRadarRecommendSongs(cookieOverride?: string): Promise<Song[]> {
     try {
       const page = this.radarPage;
       const res = await qqMusicuApi.post(
@@ -616,9 +683,10 @@ export class QQMusicProvider implements MusicProvider {
             ReqType: 0,
             FavSongs: [],
             EntranceSongs: [],
-          }
+          },
+          cookieOverride
         ),
-        { headers: { referer: "https://y.qq.com/", ...this.directCookieHeaders } }
+        { headers: { referer: "https://y.qq.com/", ...this.getDirectCookieHeaders(cookieOverride) } }
       );
       const tracks = (res.data?.req_0?.data?.VecSongs ?? [])
         .map((item: any) => item?.Track)
@@ -633,7 +701,7 @@ export class QQMusicProvider implements MusicProvider {
     }
   }
 
-  private async getGuessRecommendSongs(): Promise<Song[]> {
+  private async getGuessRecommendSongs(cookieOverride?: string): Promise<Song[]> {
     try {
       const res = await qqMusicuApi.post(
         "/cgi-bin/musicu.fcg",
@@ -646,9 +714,10 @@ export class QQMusicProvider implements MusicProvider {
             from: 0,
             scene: 0,
             song_ids: [],
-          }
+          },
+          cookieOverride
         ),
-        { headers: { referer: "https://y.qq.com/", ...this.directCookieHeaders } }
+        { headers: { referer: "https://y.qq.com/", ...this.getDirectCookieHeaders(cookieOverride) } }
       );
       return mapQqSongs(res.data?.req_0?.data?.Tracks ?? []);
     } catch {
@@ -656,26 +725,26 @@ export class QQMusicProvider implements MusicProvider {
     }
   }
 
-  async getUserPlaylists(): Promise<Playlist[]> {
-    if (!this.cookie) return [];
-    const uinMatch = /(?:^|; )uin=o?0?(\d+)/.exec(this.cookie);
-    const uin = uinMatch ? uinMatch[1] : "";
+  async getUserPlaylists(cookieOverride?: string): Promise<Playlist[]> {
+    const cookie = cookieOverride !== undefined ? cookieOverride : this.cookie;
+    if (!cookie) return [];
+    const uin = this.parseUin(cookie);
     if (!uin) return [];
 
     // Created and collected playlists come from two separate QQ endpoints.
     // Run them in parallel and concatenate (created first, then collected),
     // matching the order shown in the QQ Music desktop app.
     const [created, collected] = await Promise.all([
-      this.fetchCreatedPlaylists(uin),
-      this.fetchCollectedPlaylists(uin),
+      this.fetchCreatedPlaylists(uin, cookieOverride),
+      this.fetchCollectedPlaylists(uin, cookieOverride),
     ]);
     return [...created, ...collected];
   }
 
-  private async fetchCreatedPlaylists(uin: string): Promise<Playlist[]> {
+  private async fetchCreatedPlaylists(uin: string, cookieOverride?: string): Promise<Playlist[]> {
     try {
       const res = await this.api.get("/user/getUserPlaylists", {
-        params: { uin, ...this.cookieParams },
+        params: { uin, ...this.getCookieParams(cookieOverride) },
       });
       if (res.data?.response?.code !== 0) return [];
       return (res.data?.response?.data?.playlists ?? []).map((p: any) => {
@@ -688,6 +757,7 @@ export class QQMusicProvider implements MusicProvider {
           coverUrl: p.picurl ?? p.imgurl ?? p.coverUrl ?? "",
           songCount: p.song_count ?? p.listennum ?? songCountFromSubtitle,
           platform: "qq",
+          editable: true,
         };
       });
     } catch {
@@ -695,10 +765,11 @@ export class QQMusicProvider implements MusicProvider {
     }
   }
 
-  private async fetchCollectedPlaylists(uin: string): Promise<Playlist[]> {
+  private async fetchCollectedPlaylists(uin: string, cookieOverride?: string): Promise<Playlist[]> {
     // c.y.qq.com fav endpoint: reqtype=3 returns collected playlists (cdlist).
     // Requires g_tk derived from the p_skey cookie.
-    const pSkeyMatch = /(?:^|; )p_skey=([^;]+)/.exec(this.cookie);
+    const cookie = cookieOverride !== undefined ? cookieOverride : this.cookie;
+    const pSkeyMatch = /(?:^|; )p_skey=([^;]+)/.exec(cookie);
     if (!pSkeyMatch) return [];
     const gtk = computeGtk(pSkeyMatch[1]);
 
@@ -720,7 +791,7 @@ export class QQMusicProvider implements MusicProvider {
             g_tk: gtk,
             format: "json",
           },
-          headers: { Cookie: this.cookie },
+          headers: { Cookie: cookie },
         });
         if (res.data?.code !== 0) break;
         const list: any[] = res.data?.data?.cdlist ?? [];
@@ -731,6 +802,7 @@ export class QQMusicProvider implements MusicProvider {
             coverUrl: p.logo ?? "",
             songCount: p.songnum ?? 0,
             platform: "qq",
+            editable: false,
           });
         }
         // Stop when upstream signals no more pages, or when this page is
@@ -743,5 +815,218 @@ export class QQMusicProvider implements MusicProvider {
       // earlier pages.
     }
     return all;
+  }
+
+  async likeSong(songId: string, like = true, cookieOverride?: string): Promise<boolean> {
+    // QQ Music "My Favorites" (我喜欢的音乐) fixed folder id is 201
+    this.logInfo(
+      { songId, like, targetPlaylistId: "201" },
+      "[QQ] likeSong invoked, redirecting to addSongToPlaylist(201)"
+    );
+    return this.addSongToPlaylist("201", songId, cookieOverride);
+  }
+
+  private async resolveNumericSongId(songId: string): Promise<number | null> {
+    if (/^\d+$/.test(songId)) {
+      return Number(songId);
+    }
+    try {
+      const reqData = JSON.stringify({
+        req_0: {
+          module: "music.pf_song_detail_svr",
+          method: "get_song_detail_yqq",
+          param: { song_mid: songId, song_type: 0 },
+        },
+      });
+      const res = await qqMusicuApi.get("/cgi-bin/musicu.fcg", {
+        params: { format: "json", data: reqData },
+      });
+      const numId = res.data?.req_0?.data?.track_info?.id;
+      if (numId) {
+        return Number(numId);
+      }
+    } catch (err) {
+      this.logWarn({ err: (err as Error).message, songId }, "[QQ] Failed to resolve numeric song id");
+    }
+    return null;
+  }
+
+  async addSongToPlaylist(playlistId: string, songId: string, cookieOverride?: string): Promise<boolean> {
+    const cookie = cookieOverride !== undefined ? cookieOverride : this.cookie;
+    if (!cookie) {
+      this.logWarn({ playlistId, songId }, "[QQ] addSongToPlaylist aborted: No cookie provided");
+      return false;
+    }
+    const uin = this.parseUin(cookie);
+    if (!uin) {
+      this.logWarn({ playlistId, songId }, "[QQ] addSongToPlaylist aborted: Failed to parse uin from cookie");
+      return false;
+    }
+
+    const pSkeyMatch = /(?:^|; )p_skey=([^;]+)/.exec(cookie);
+    const gtk = pSkeyMatch ? computeGtk(pSkeyMatch[1]) : 5381;
+
+    const keyMatch = /(?:^|; )(?:qm_keyst|qqmusic_key)=([^;]+)/.exec(cookie);
+    const musickey = keyMatch ? keyMatch[1] : "";
+
+    let targetDirId = playlistId;
+    // If playlistId is a dissid (e.g. 8+ digits like 7973835201), map it to the user's dirid
+    if (/^\d{8,}$/.test(playlistId)) {
+      try {
+        const res = await this.api.get("/user/getUserPlaylists", {
+          params: { uin, ...this.getCookieParams(cookieOverride) },
+        });
+        const pls = res.data?.response?.data?.playlists ?? [];
+        const found = pls.find((p: any) => String(p.dissid ?? p.id) === playlistId);
+        if (found?.dirid !== undefined && found?.dirid !== null) {
+          targetDirId = String(found.dirid);
+          this.logInfo(
+            { playlistId, targetDirId, dissTitle: found.title || found.dissname },
+            "[QQ] Successfully mapped playlist dissid to numeric dirid"
+          );
+        }
+      } catch (err) {
+        this.logWarn(
+          { playlistId, err: (err as Error).message },
+          "[QQ] Failed to query user playlists for dissid to dirid mapping"
+        );
+      }
+    }
+
+    const numericSongId = await this.resolveNumericSongId(songId);
+
+    this.logInfo(
+      { uin, playlistId, targetDirId, songId, numericSongId, hasMusicKey: Boolean(musickey) },
+      "[QQ] Executing addSongToPlaylist pipeline"
+    );
+
+    if (!numericSongId) {
+      this.logWarn({ songId }, "[QQ] Cannot add song: unable to resolve numeric songId from upstream");
+      return false;
+    }
+
+    // 1. Primary path: Official web gateway protocol (music.musicasset.PlaylistDetailWrite.AddSonglist)
+    try {
+      const comm = {
+        ct: 24,
+        cv: 0,
+        uin,
+        authst: musickey,
+        format: "json",
+        inCharset: "utf-8",
+        outCharset: "utf-8",
+      };
+
+      const payload = {
+        comm,
+        addSong: {
+          module: "music.musicasset.PlaylistDetailWrite",
+          method: "AddSonglist",
+          param: {
+            dirId: Number(targetDirId) || targetDirId,
+            v_songInfo: [
+              {
+                songType: 0,
+                songId: numericSongId,
+              },
+            ],
+          },
+        },
+      };
+
+      this.logInfo(
+        { endpoint: "/cgi-bin/musicu.fcg", module: "PlaylistDetailWrite.AddSonglist", dirId: targetDirId, numericSongId },
+        "[QQ] Sending request to modern musicu.fcg gateway"
+      );
+
+      const res = await qqMusicuApi.post("/cgi-bin/musicu.fcg", payload, {
+        headers: {
+          Cookie: cookie,
+          Referer: "https://y.qq.com/",
+          Origin: "https://y.qq.com",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        },
+      });
+
+      const resData = res.data?.addSong || res.data;
+      const code = resData?.code;
+      const subcode = resData?.subcode;
+      const msg = resData?.msg || "";
+      const retCode = resData?.data?.retCode ?? resData?.result?.retCode;
+
+      this.logInfo(
+        { httpStatus: res.status, code, subcode, msg, retCode },
+        "[QQ] Received response from musicu.fcg"
+      );
+
+      if (code === 0 && (retCode === undefined || retCode === 0)) {
+        this.logInfo({ playlistId, targetDirId, songId, numericSongId }, "[QQ] Successfully added song to playlist via modern musicu.fcg");
+        return true;
+      }
+
+      this.logWarn(
+        { code, subcode, msg, retCode, hint: code === 80105 ? "目标歌单为系统特殊歌单(如我喜欢201)，平台限制Web直接修改" : "上游网关拒绝写入" },
+        "[QQ] Modern musicu.fcg operation rejected by QQ Music upstream"
+      );
+    } catch (err) {
+      this.logError({ err: (err as Error).message }, "[QQ] Modern musicu.fcg request failed with exception");
+    }
+
+    // 2. Secondary path: Legacy CGI (fcg_music_add2songdir.fcg) fallback
+    try {
+      const form = new URLSearchParams({
+        g_tk: String(gtk),
+        uin,
+        dirid: targetDirId,
+        format: "json",
+        inCharset: "utf8",
+        outCharset: "utf8",
+        from: "1",
+        songid: String(numericSongId),
+        mid: songId,
+      });
+
+      this.logInfo(
+        { endpoint: "/splcloud/fcgi-bin/fcg_music_add2songdir.fcg", dirid: targetDirId, numericSongId },
+        "[QQ] Sending request to legacy fcg_music_add2songdir.fcg"
+      );
+
+      const res = await qqFavApi.post("/splcloud/fcgi-bin/fcg_music_add2songdir.fcg", form.toString(), {
+        headers: {
+          Cookie: cookie,
+          Referer: "https://y.qq.com/",
+          Origin: "https://y.qq.com",
+          "Content-Type": "application/x-www-form-urlencoded",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        },
+      });
+
+      const text = typeof res.data === "string" ? res.data : JSON.stringify(res.data);
+      const snippet = text.trim().slice(0, 150);
+
+      this.logInfo({ httpStatus: res.status, responseSnippet: snippet }, "[QQ] Legacy CGI response received");
+
+      // Check if it's the static HTML fake success template
+      if (text.includes("add2fv_success")) {
+        this.logWarn(
+          { responseSnippet: snippet },
+          "[QQ] Detected legacy CGI static template 'add2fv_success' — this endpoint is obsolete and does NOT sync to modern mobile/desktop QQ Music database"
+        );
+      }
+
+      // Only accept if upstream returned an explicit JSON code === 0
+      if (typeof res.data === "object" && res.data?.code === 0) {
+        this.logInfo({ playlistId, songId }, "[QQ] Legacy CGI returned genuine code: 0");
+        return true;
+      }
+    } catch (err) {
+      this.logError({ err: (err as Error).message }, "[QQ] Legacy CGI request threw exception");
+    }
+
+    this.logWarn(
+      { playlistId, targetDirId, songId, uin },
+      "[QQ] All add song methods failed: QQ Music upstream rejected playlist modification"
+    );
+    return false;
   }
 }

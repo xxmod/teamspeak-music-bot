@@ -73,7 +73,7 @@ export function cleanupTempDir(dir: string): void {
   }
 }
 
-export function buildFfmpegArgs(url: string, seekSeconds: number): string[] {
+export function buildFfmpegArgs(url: string, seekSeconds: number, gainDb = 0): string[] {
   const args: string[] = [];
   const isHttp = /^https?:\/\//i.test(url);
 
@@ -106,6 +106,9 @@ export function buildFfmpegArgs(url: string, seekSeconds: number): string[] {
   args.push("-i", url);
   // Output-side seek (after -i): works on CDNs that reject Range/keyframe seeks (NetEase music.126.net).
   if (seekSeconds > 0) args.push("-ss", String(seekSeconds));
+  if (Number.isFinite(gainDb) && Math.abs(gainDb) >= 0.05) {
+    args.push("-af", `volume=${gainDb.toFixed(2)}dB`);
+  }
   args.push("-f", "s16le", "-ar", "48000", "-ac", "2", "-acodec", "pcm_s16le", "-");
 
   return args;
@@ -134,18 +137,25 @@ export function shouldEndOnStall(
 }
 
 /**
- * Maps a 0-100 volume value to a linear PCM gain factor (#84).
+ * Maps a 0-100 volume value to a linear PCM gain factor using a standard
+ * 40 dB logarithmic audio taper curve (IEC 60268-7).
  *
- * Continuous and strictly monotonic over [0,100]: 0 at vol 0 and exactly 1.0 at
- * vol 100. The previous mapping was a two-piece step — gain = (vol/100)*0.2 for
- * vol<100 (so the whole 0-99 range only spanned 0..0.198, making 80->99 feel
- * flat) then a raw passthrough at vol===100 (a ~5x jump). This single curve keeps
- * the low end gentle but ramps smoothly toward full loudness near the top, so the
- * slider feels proportional with no dead zone and no discontinuity at 100.
+ * Human hearing perceives loudness logarithmically (in decibels). Linear
+ * amplitude scaling causes volume to feel unresponsive at the high end and
+ * collapse abruptly at the low end.
+ *
+ * This formula provides uniform dB attenuation per step across the slider:
+ * gain(x) = (10^(2 * x) - 1) / 99  where x = vol / 100 in [0, 1]
+ * - vol = 0: gain = 0.0 (-inf dB, pure silence)
+ * - vol = 50: gain ≈ 0.0909 (-20.8 dB, natural half-loudness midpoint)
+ * - vol = 100: gain = 1.0 (0 dB, bit-exact full scale)
+ * Each 10% change uniformly attenuates ~4 dB, yielding a smooth and consistent auditory response.
  */
 export function volumeToFactor(volume: number): number {
-  const x = Math.max(0, Math.min(100, volume)) / 100;
-  return 0.2 * x + 0.8 * Math.pow(x, 8);
+  if (volume <= 0) return 0;
+  if (volume >= 100) return 1;
+  const x = volume / 100;
+  return (Math.pow(10, 2 * x) - 1) / 99;
 }
 
 export interface PlayerEvents {
@@ -198,6 +208,7 @@ export class AudioPlayer extends EventEmitter {
   // transient underrun never trips it.
   private static readonly MAX_STALL_ATTEMPTS = 3000;
   private currentSongDuration = 0; // 当前歌曲总时长（秒）
+  private currentGainDb = 0; // 音量均衡增益（分贝）
 
   // --- External PCM mode (Stage 2: go-librespot Spotify sidecar) ---
   // When true, PCM arrives from a long-lived external Readable instead of a
@@ -221,7 +232,7 @@ export class AudioPlayer extends EventEmitter {
     this.logger = logger;
   }
 
-  play(url: string, seekSeconds = 0, songDuration = 0): void {
+  play(url: string, seekSeconds = 0, songDuration = 0, gainDb = 0): void {
     // 1. 停止当前所有播放，自增 sessionId 屏蔽旧回调 （
     this.stop();
 
@@ -234,6 +245,7 @@ export class AudioPlayer extends EventEmitter {
     this.spawnFailed = false;
     this.emptyFrameAttempts = 0;
     this.currentSongDuration = songDuration;
+    this.currentGainDb = gainDb;
 
     if (this.consecutiveFailures >= AudioPlayer.MAX_CONSECUTIVE_FAILURES) {
       this.logger.error({ failures: this.consecutiveFailures }, "FFmpeg failures limit reached");
@@ -247,7 +259,7 @@ export class AudioPlayer extends EventEmitter {
       return;
     }
 
-    const args = buildFfmpegArgs(url, seekSeconds);
+    const args = buildFfmpegArgs(url, seekSeconds, this.currentGainDb);
 
     const ffmpegBin = getFfmpegCommand();
     this.ffmpeg = spawn(ffmpegBin, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -376,7 +388,7 @@ export class AudioPlayer extends EventEmitter {
       return;
     }
 
-    const args = buildFfmpegArgs(tempFile, seekSeconds);
+    const args = buildFfmpegArgs(tempFile, seekSeconds, this.currentGainDb);
     const ffmpegBin = getFfmpegCommand();
     this.ffmpeg = spawn(ffmpegBin, args, { stdio: ["ignore", "pipe", "pipe"] });
 
@@ -717,6 +729,19 @@ export class AudioPlayer extends EventEmitter {
       }
     }
 
+    // 静音优化：当音量为 0 时跳过 Opus 编码与 frame 发送，
+    // 使 TeamSpeak 服务器停止接收语音包从而熄灭麦克风小蓝灯；
+    // 同时依然递增 framesPlayed 确保播放进度正常推进。
+    if (this.volume <= 0) {
+      this.framesPlayed++;
+      this.healthyFrames++;
+      if (this.healthyFrames >= AudioPlayer.HEALTHY_FRAME_RESET) {
+        this.consecutiveFailures = 0;
+        this.healthyFrames = 0;
+      }
+      return;
+    }
+
     try {
       const adjusted = this.applyVolume(pcmFrame);
       const opusFrame = this.encoder.encode(adjusted);
@@ -733,6 +758,7 @@ export class AudioPlayer extends EventEmitter {
   }
 
   private emitSilenceFrame(): void {
+    if (this.volume <= 0) return;
     try {
       const opusFrame = this.encoder.encode(Buffer.alloc(PCM_FRAME_BYTES));
       this.emit("frame", opusFrame);
@@ -802,9 +828,10 @@ export class AudioPlayer extends EventEmitter {
     // transport is delegated to the SpotifyController by the caller (Task 7).
     if (this.externalMode) return;
     if (this.currentUrl && Number.isFinite(seconds) && seconds >= 0) {
-      this.play(this.currentUrl, seconds, this.currentSongDuration);
+      this.play(this.currentUrl, seconds, this.currentSongDuration, this.currentGainDb);
     }
   }
+  getGainDb(): number { return this.currentGainDb; }
   pause(): void { if (this.state === "playing") this.state = "paused"; }
   resume(): void { if (this.state === "paused") { this.state = "playing"; this.nextFrameTime = performance.now(); } }
   resetFailures(): void { this.consecutiveFailures = 0; }

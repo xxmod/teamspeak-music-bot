@@ -400,6 +400,7 @@ export function mapKugouPlaylist(raw: KugouRawPlaylist): Playlist {
     coverUrl: fixCover(firstStr(raw.pic, raw.imgurl, raw.flexible_cover, raw.cover, raw.img)),
     songCount: Number(raw.count ?? raw.songcount ?? raw.song_count ?? raw.total ?? 0) || 0,
     platform: "kugou",
+    editable: raw.type !== undefined ? (raw.type !== 1 && raw.type !== "1") : undefined,
   };
 }
 
@@ -413,6 +414,41 @@ export function mapKugouPlaylists(list: KugouRawPlaylist[] | undefined): Playlis
 // Provider
 // ---------------------------------------------------------------------------
 type CookieMap = Record<string, string>;
+
+export function parseKugouCookie(cookie: string): CookieMap {
+  const map: CookieMap = {};
+  for (const part of (cookie || "").split(";")) {
+    const eq = part.indexOf("=");
+    if (eq < 0) continue;
+    const k = part.slice(0, eq).trim();
+    const v = part.slice(eq + 1).trim();
+    if (k) map[k] = v;
+  }
+  // KuGoo sub-parameters (e.g. KuGoo=KugooID=...&t=...&NickName=...)
+  if (map.KuGoo) {
+    for (const sub of map.KuGoo.split("&")) {
+      const eq = sub.indexOf("=");
+      if (eq > 0) {
+        const sk = sub.slice(0, eq).trim();
+        const sv = sub.slice(eq + 1).trim();
+        if (sk && !map[sk]) map[sk] = sv;
+      }
+    }
+  }
+  // Alias mapping for userid / token / nickname
+  if (!map.userid) {
+    if (map.KugooID) map.userid = map.KugooID;
+    else if (map.kg_h_uid) map.userid = map.kg_h_uid;
+  }
+  if (!map.token) {
+    if (map.t) map.token = map.t;
+  }
+  if (!map.nickname) {
+    if (map.NickName) map.nickname = map.NickName;
+    else if (map.UserName) map.nickname = map.UserName;
+  }
+  return map;
+}
 
 export class KugouProvider implements MusicProvider {
   readonly platform = "kugou" as const;
@@ -441,14 +477,7 @@ export class KugouProvider implements MusicProvider {
 
   // --- Cookie persistence (CookieStore stores a flat "k=v; k=v" string) ------
   setCookie(cookie: string): void {
-    const map: CookieMap = {};
-    for (const part of (cookie || "").split(";")) {
-      const eq = part.indexOf("=");
-      if (eq < 0) continue;
-      const k = part.slice(0, eq).trim();
-      const v = part.slice(eq + 1).trim();
-      if (k) map[k] = v;
-    }
+    const map = parseKugouCookie(cookie);
     this.cookie = map;
     if (map.dfid) {
       /* keep registered device */
@@ -854,18 +883,19 @@ export class KugouProvider implements MusicProvider {
   }
 
   // --- Personal FM (个性化电台) ---------------------------------------------
-  async getPersonalFm(): Promise<Song[]> {
+  async getPersonalFm(cookieOverride?: string): Promise<Song[]> {
     try {
+      const cookie = cookieOverride !== undefined ? parseKugouCookie(cookieOverride) : this.cookie;
       const now = Date.now();
-      const userid = this.cookie.userid && this.cookie.userid !== "0" ? this.cookie.userid : "";
+      const userid = cookie.userid && cookie.userid !== "0" ? cookie.userid : "";
       const identity: Record<string, unknown> = {};
       if (userid) {
         // Convey the logged-in identity to the recommender (reference personal_fm.js).
         identity.userid = userid;
         identity.kguid = userid;
       }
-      if (this.cookie.token) identity.token = this.cookie.token;
-      if (this.cookie.vip_type) identity.vip_type = this.cookie.vip_type;
+      if (cookie.token) identity.token = cookie.token;
+      if (cookie.vip_type) identity.vip_type = cookie.vip_type;
       const data = await this.request({
         method: "POST",
         url: "/v2/personal_recommend",
@@ -900,9 +930,10 @@ export class KugouProvider implements MusicProvider {
   // --- 每日推荐歌曲 (daily recommend) ---------------------------------------
   // Ported from reference recommend_songs.js (/everyday_song_recommend).
   // Requires a logged-in cookie (userid/token) for personalised results.
-  async getDailyRecommendSongs(): Promise<Song[]> {
+  async getDailyRecommendSongs(cookieOverride?: string): Promise<Song[]> {
     try {
-      const userid = this.cookie.userid && this.cookie.userid !== "0" ? this.cookie.userid : "0";
+      const cookie = cookieOverride !== undefined ? parseKugouCookie(cookieOverride) : this.cookie;
+      const userid = cookie.userid && cookie.userid !== "0" ? cookie.userid : "0";
       const data = await this.request({
         method: "POST",
         url: "/everyday_song_recommend",
@@ -920,10 +951,11 @@ export class KugouProvider implements MusicProvider {
 
   // --- 用户歌单 (the logged-in user's own playlists) ------------------------
   // Ported from reference user_playlist.js (/v7/get_all_list).
-  async getUserPlaylists(): Promise<Playlist[]> {
+  async getUserPlaylists(cookieOverride?: string): Promise<Playlist[]> {
     try {
-      const userid = this.cookie.userid || "0";
-      const token = this.cookie.token || "";
+      const cookie = cookieOverride !== undefined ? parseKugouCookie(cookieOverride) : this.cookie;
+      const userid = cookie.userid || "0";
+      const token = cookie.token || "";
       if (!userid || userid === "0" || !token) return [];
       const out: Playlist[] = [];
       const seen = new Set<string>();
@@ -936,6 +968,7 @@ export class KugouProvider implements MusicProvider {
           encryptType: "android",
           params: { plat: 1, userid: Number(userid), token },
           data: { userid: Number(userid), token, total_ver: 979, type: 2, page, pagesize: PAGE_SIZE },
+          extraHeaders: cookieOverride ? { Cookie: cookieOverride } : undefined,
         });
         const d = data?.data ?? {};
         const list = (d.info ?? d.list ?? []) as KugouRawPlaylist[];
@@ -1006,6 +1039,33 @@ export class KugouProvider implements MusicProvider {
     }
   }
 
+  async checkQrCodeForCookie(
+    key: string
+  ): Promise<{ status: "waiting" | "scanned" | "confirmed" | "expired"; cookie?: string }> {
+    try {
+      const data = await this.request({
+        method: "GET",
+        baseURL: "https://login-user.kugou.com",
+        url: "/v2/get_userinfo_qrcode",
+        encryptType: "web",
+        params: { plat: 4, appid: APPID, srcappid: SRCAPPID, qrcode: key },
+      });
+      const status = Number(data?.data?.status);
+      if (status === 4) {
+        const parts: string[] = [];
+        if (data.data.token) parts.push(`token=${data.data.token}`);
+        if (data.data.userid) parts.push(`userid=${data.data.userid}`);
+        if (data.data.nickname) parts.push(`nickname=${data.data.nickname}`);
+        return { status: "confirmed", cookie: parts.join("; ") };
+      }
+      if (status === 2) return { status: "scanned" };
+      if (status === 1) return { status: "waiting" };
+      return { status: "expired" };
+    } catch {
+      return { status: "expired" };
+    }
+  }
+
   async getAuthStatus(): Promise<AuthStatus> {
     if (!this.cookie.token || !this.cookie.userid || this.cookie.userid === "0") {
       return { loggedIn: false };
@@ -1026,6 +1086,145 @@ export class KugouProvider implements MusicProvider {
       return decodeURIComponent(raw);
     } catch {
       return raw;
+    }
+  }
+
+  async likeSong(songId: string, like = true, cookieOverride?: string): Promise<boolean> {
+    // For Kugou:
+    // 1. is_def === 2 or name === "我喜欢" (standard favorite playlist in modern Kugou app, listid: 2)
+    // 2. is_def === 1 or name === "默认收藏" (legacy default collection, listid: 1)
+    let targetListId = 2;
+    try {
+      const cookie = cookieOverride !== undefined ? parseKugouCookie(cookieOverride) : this.cookie;
+      const userid = cookie.userid || "0";
+      const token = cookie.token || "";
+      if (userid && userid !== "0" && token) {
+        const raw = await this.request({
+          method: "POST",
+          url: "/v7/get_all_list",
+          xRouter: "cloudlist.service.kugou.com",
+          encryptType: "android",
+          params: { plat: 1, userid: Number(userid), token },
+          data: { userid: Number(userid), token, total_ver: 979, type: 2, page: 1, pagesize: 20 },
+          extraHeaders: cookieOverride ? { Cookie: cookieOverride } : undefined,
+        });
+        const list = raw?.data?.info ?? raw?.data?.list ?? [];
+        if (Array.isArray(list) && list.length > 0) {
+          const fav =
+            list.find((p: any) => p.is_def === 2 || p.name === "我喜欢") ||
+            list.find((p: any) => p.is_def === 1 || p.name === "默认收藏") ||
+            list[0];
+          if (fav?.listid) targetListId = Number(fav.listid);
+        }
+      }
+    } catch {
+      // fallback to 2
+    }
+    return this.addSongToPlaylist(String(targetListId), songId, cookieOverride);
+  }
+
+  async addSongToPlaylist(playlistId: string, songId: string, cookieOverride?: string): Promise<boolean> {
+    try {
+      const cookie = cookieOverride !== undefined ? parseKugouCookie(cookieOverride) : this.cookie;
+      const userid = cookie.userid || "0";
+      const token = cookie.token || "";
+      if (!userid || userid === "0" || !token) return false;
+
+      const { hash, albumAudioId, albumId } = parseId(songId);
+      const pureHash = (hash || songId.split("|")[0] || "").toLowerCase();
+      if (!pureHash) return false;
+
+      let numericListId = Number(playlistId);
+      if (isNaN(numericListId) || playlistId.startsWith("collection_")) {
+        // Resolve collection_* to numeric listid
+        try {
+          const raw = await this.request({
+            method: "POST",
+            url: "/v7/get_all_list",
+            xRouter: "cloudlist.service.kugou.com",
+            encryptType: "android",
+            params: { plat: 1, userid: Number(userid), token },
+            data: { userid: Number(userid), token, total_ver: 979, type: 2, page: 1, pagesize: 30 },
+            extraHeaders: cookieOverride ? { Cookie: cookieOverride } : undefined,
+          });
+          const list = raw?.data?.info ?? raw?.data?.list ?? [];
+          if (Array.isArray(list)) {
+            const found = list.find((p: any) => String(p.global_collection_id || p.gid) === playlistId);
+            if (found?.listid) {
+              numericListId = Number(found.listid);
+            }
+          }
+        } catch {
+          // ignore lookup error
+        }
+      }
+
+      if (isNaN(numericListId) || numericListId <= 0) {
+        numericListId = 1; // Fallback to default collection
+      }
+
+      // Try /cloudlist.service/v6/add_song (standard gateway endpoint)
+      try {
+        const v6Res = await this.request({
+          method: "POST",
+          baseURL: "https://gateway.kugou.com",
+          url: "/cloudlist.service/v6/add_song",
+          encryptType: "android",
+          params: {
+            last_time: 0,
+            last_area: "gztx",
+            userid: Number(userid),
+            token,
+          },
+          data: {
+            userid: Number(userid),
+            token,
+            listid: numericListId,
+            list_ver: 0,
+            type: 0,
+            slow_upload: 1,
+            scene: "false;null",
+            data: [
+              {
+                number: 1,
+                name: "歌曲",
+                hash: pureHash,
+                album_id: Number(albumId) || 0,
+                mixsongid: Number(albumAudioId) || 0,
+                size: 0,
+                sort: 0,
+                timelen: 0,
+                bitrate: 0,
+              },
+            ],
+          },
+          extraHeaders: cookieOverride ? { Cookie: cookieOverride } : undefined,
+        });
+        if (v6Res?.status === 1 || v6Res?.error_code === 0) {
+          return true;
+        }
+      } catch {
+        // fallback to /v7/add_song
+      }
+
+      // Fallback: /v7/add_song
+      const data = await this.request({
+        method: "POST",
+        url: "/v7/add_song",
+        xRouter: "cloudlist.service.kugou.com",
+        encryptType: "android",
+        params: { plat: 1, userid: Number(userid), token },
+        data: {
+          userid: Number(userid),
+          token,
+          listid: numericListId,
+          data: [{ hash: pureHash }],
+        },
+        extraHeaders: cookieOverride ? { Cookie: cookieOverride } : undefined,
+      });
+      return data?.status === 1 || data?.err_code === 0 || data?.error_code === 0;
+    } catch {
+      return false;
     }
   }
 }
