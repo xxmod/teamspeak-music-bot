@@ -9,7 +9,13 @@ import type { Readable } from "node:stream";
 import type { Logger } from "../logger.js";
 
 const require = createRequire(import.meta.url);
-const ffmpegPath: string | null = require("ffmpeg-static");
+const ffmpegPath: string | null = (() => {
+  try {
+    return require("ffmpeg-static");
+  } catch {
+    return null;
+  }
+})();
 
 /** 全局 PID 追踪器，防止进程在类实例切换时沦为孤儿进程 （ */
 const globalActivePids = new Set<number>();

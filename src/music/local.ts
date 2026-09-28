@@ -15,9 +15,7 @@ import type {
   Song,
   SongUrlResult,
 } from "./provider.js";
-
-const require = createRequire(import.meta.url);
-const ffmpegPath: string | null = require("ffmpeg-static");
+import { getFfmpegCommand } from "../audio/player.js";
 
 const AUDIO_EXTENSIONS = new Set([
   ".mp3",
@@ -171,7 +169,7 @@ export function parseMediaProbe(stderr: string): Omit<MediaProbe, "probed"> {
 
 async function probeMedia(filePath: string): Promise<MediaProbe> {
   return new Promise((resolve) => {
-    const ffmpeg = spawn(ffmpegPath || "ffmpeg", ["-hide_banner", "-i", filePath], {
+    const ffmpeg = spawn(getFfmpegCommand(), ["-hide_banner", "-i", filePath], {
       stdio: ["ignore", "ignore", "pipe"],
     });
     let stderr = "";
@@ -217,7 +215,7 @@ async function probeMedia(filePath: string): Promise<MediaProbe> {
 async function extractAudioTrack(source: string, target: string): Promise<boolean> {
   const ok = await new Promise<boolean>((resolve) => {
     const ffmpeg = spawn(
-      ffmpegPath || "ffmpeg",
+      getFfmpegCommand(),
       ["-hide_banner", "-loglevel", "error", "-y", "-i", source,
        "-vn", "-sn", "-dn", "-map", "0:a:0", "-c:a", "copy", target],
       { stdio: ["ignore", "ignore", "ignore"] },

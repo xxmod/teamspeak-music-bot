@@ -30,17 +30,17 @@ COPY . .
 RUN npx tsc
 
 # Prune devDependencies to keep only production dependencies (preserves compiled native addons)
-RUN npm prune --omit=dev && npm cache clean --force
+# Also strip the bundled ~80MB ffmpeg-static binary (production image uses static FFmpeg binary)
+# and build-only sourcemaps from dist to minimize image size.
+RUN npm prune --omit=dev && npm cache clean --force && \
+    rm -f node_modules/ffmpeg-static/ffmpeg* && \
+    find dist -name "*.map" -delete
 
 # --- Stage 3: Production image ---
 FROM node:22-slim
 
-# Install system FFmpeg — the ffmpeg-static npm package bundles a pre-compiled
-# binary that can SIGSEGV inside Docker (incompatible glibc / missing libs).
-# System-installed FFmpeg is always compatible with the container runtime.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg && \
-    rm -rf /var/lib/apt/lists/*
+# Copy statically-linked FFmpeg & FFprobe (musl-based, zero dynamic dependencies, SIGSEGV-proof)
+COPY --from=mwader/static-ffmpeg:6.1 /ffmpeg /ffprobe /usr/local/bin/
 
 WORKDIR /app
 
