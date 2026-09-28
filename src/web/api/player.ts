@@ -538,6 +538,7 @@ export function createPlayerRouter(
           return { ok: true, message: `正在播放：${song.name || 'Unknown'} - ${song.artist || 'Unknown'}` };
         }
 
+        bot.preAnalyzeNextTrack?.();
         return { ok: true, message: `已加入下一首：${song.name || 'Unknown'} - ${song.artist || 'Unknown'}` };
       });
       res.json(body);
@@ -574,6 +575,7 @@ export function createPlayerRouter(
         if (!ok) {
           return { ok: false, message: `无法播放「${song.name || song.id}」（区域/版权限制）` };
         }
+        bot.preAnalyzeNextTrack?.();
         return { ok: true, message: `正在播放：${song.name || "Unknown"} - ${song.artist || "Unknown"}` };
       });
       res.json(body);
@@ -609,7 +611,8 @@ export function createPlayerRouter(
           return { message: `Now playing: ${song.name || 'Unknown'} - ${song.artist || 'Unknown'}` };
         }
 
-        return { message: `Added to queue: ${song.name || 'Unknown'} - ${song.artist || 'Unknown'} (position ${queue.size()})` };
+        bot.preAnalyzeNextTrack?.();
+        return { message: `Added to queue: ${song.name || 'Unknown'} - ${song.artist || 'Unknown'}` };
       });
       res.json(body);
     } catch (err) {
@@ -645,6 +648,8 @@ export function createPlayerRouter(
       if (bot.getPlayer().getState() === "idle") {
         const first = queue.play();
         if (first) await bot.resolveAndPlay(first);
+      } else {
+        bot.preAnalyzeNextTrack?.();
       }
 
       res.json({ message: `Added: ${song.name} - ${song.artist} (position ${queue.size()})` });

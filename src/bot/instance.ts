@@ -1190,7 +1190,9 @@ export class BotInstance extends EventEmitter {
   /**
    * 后台异步预分析队列中下一首曲目，提前入库，消除后续切歌延迟。
    */
-  private preAnalyzeNextTrack(): void {
+  public preAnalyzeNextTrack(): void {
+    if (!this.config.audioNormalization?.enabled) return;
+
     const nextSong = this.queue.peekNext();
     if (!nextSong || nextSong.platform === "spotify") return;
 
@@ -1415,6 +1417,7 @@ export class BotInstance extends EventEmitter {
     }
 
     this.emit("stateChange");
+    this.preAnalyzeNextTrack();
     return `Added to queue: ${s.name} - ${s.artist} (position ${this.queue.size()})`;
   }
 
@@ -1446,6 +1449,7 @@ export class BotInstance extends EventEmitter {
     }
 
     this.emit("stateChange");
+    this.preAnalyzeNextTrack();
     return `Up next: ${s.name} - ${s.artist}`;
   }
 
