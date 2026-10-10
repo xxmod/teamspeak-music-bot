@@ -294,6 +294,18 @@ function initTables(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_sessions_userId ON sessions(userId);
     CREATE INDEX IF NOT EXISTS idx_sessions_expiresAt ON sessions(expiresAt);
 
+    CREATE TABLE IF NOT EXISTS api_keys (
+      id TEXT PRIMARY KEY,
+      userId TEXT NOT NULL,
+      name TEXT NOT NULL,
+      keyHash TEXT NOT NULL UNIQUE,
+      keyPrefix TEXT NOT NULL,
+      createdAt INTEGER NOT NULL,
+      lastUsedAt INTEGER,
+      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_api_keys_userId ON api_keys(userId);
+
     CREATE TABLE IF NOT EXISTS user_audit (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       timestamp INTEGER NOT NULL,
@@ -499,6 +511,7 @@ export function createDatabase(dbPath: string): BotDatabase {
   const checkFavorited = db.prepare(`
     SELECT 1 FROM favorite_playlists WHERE userId = ? AND playlistId = ? AND platform = ?
   `);
+
 
   // A corrupt/hand-edited songs blob must never throw into a route or the
   // restore path — degrade to an empty list instead.
@@ -736,6 +749,7 @@ export function createDatabase(dbPath: string): BotDatabase {
       const row = checkFavorited.get(userId, playlistId, platform);
       return row !== undefined;
     },
+
 
     saveQueue(ownerId, name, songs) {
       if (songs.length > MAX_QUEUE_SONGS) {
