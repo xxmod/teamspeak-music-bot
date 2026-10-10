@@ -270,3 +270,44 @@ describe("NeteaseProvider.getArtistAllSongs (全部歌曲 paging)", () => {
     expect(page.hasMore).toBe(false);
   });
 });
+
+describe("NeteaseProvider.getRecommendPlaylists", () => {
+  function withGet(p: NeteaseProvider, impl: (path: string, cfg: any) => any) {
+    const get = vi.fn(async (path: string, cfg: any) => ({ data: impl(path, cfg) }));
+    (p as any).api = { get };
+    return get;
+  }
+
+  it("uses global cookie params when no cookieOverride is passed", async () => {
+    const p = new NeteaseProvider("http://x");
+    p.setCookie("MUSIC_U=global_cookie");
+    const get = withGet(p, () => ({
+      result: [{ id: 123, name: "Global Rec", picUrl: "http://cover", trackCount: 10 }],
+    }));
+
+    const res = await p.getRecommendPlaylists();
+    expect(res).toEqual([
+      { id: "123", name: "Global Rec", coverUrl: "http://cover", songCount: 10, platform: "netease" },
+    ]);
+    expect(get).toHaveBeenCalledWith("/personalized", {
+      params: { limit: 10, cookie: "MUSIC_U=global_cookie" },
+    });
+  });
+
+  it("uses user cookie override when cookieOverride is provided", async () => {
+    const p = new NeteaseProvider("http://x");
+    p.setCookie("MUSIC_U=global_cookie");
+    const get = withGet(p, () => ({
+      result: [{ id: 456, name: "User Rec", picUrl: "http://cover2", trackCount: 20 }],
+    }));
+
+    const res = await p.getRecommendPlaylists("MUSIC_U=user_cookie");
+    expect(res).toEqual([
+      { id: "456", name: "User Rec", coverUrl: "http://cover2", songCount: 20, platform: "netease" },
+    ]);
+    expect(get).toHaveBeenCalledWith("/personalized", {
+      params: { limit: 10, cookie: "MUSIC_U=user_cookie" },
+    });
+  });
+});
+

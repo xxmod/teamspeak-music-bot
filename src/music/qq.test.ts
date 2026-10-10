@@ -637,3 +637,57 @@ describe("QQMusicProvider.getArtistAllSongs (album aggregation)", () => {
     expect(full.total).toBe(2);
   });
 });
+
+describe("QQMusicProvider.getRecommendPlaylists", () => {
+  beforeEach(() => {
+    mockGet.mockReset();
+    mockPost.mockReset();
+  });
+
+  it("uses global cookie params when no cookieOverride is passed", async () => {
+    mockGet.mockResolvedValueOnce({
+      data: {
+        response: {
+          data: {
+            list: [{ dissid: 101, dissname: "QQ Rec", imgurl: "http://cover", listennum: 50 }],
+          },
+        },
+      },
+    });
+
+    const p = new QQMusicProvider("http://x");
+    p.setCookie("uin=12345; qm_keyst=global");
+    const res = await p.getRecommendPlaylists();
+
+    expect(res).toEqual([
+      { id: "101", name: "QQ Rec", coverUrl: "http://cover", songCount: 50, platform: "qq" },
+    ]);
+    expect(mockGet).toHaveBeenCalledWith("/getSongLists", {
+      params: { categoryId: 10000000, pageSize: 10, cookie: "uin=12345; qm_keyst=global" },
+    });
+  });
+
+  it("uses user cookie override when cookieOverride is passed", async () => {
+    mockGet.mockResolvedValueOnce({
+      data: {
+        response: {
+          data: {
+            list: [{ dissid: 202, dissname: "User Rec", imgurl: "http://cover2", listennum: 80 }],
+          },
+        },
+      },
+    });
+
+    const p = new QQMusicProvider("http://x");
+    p.setCookie("uin=12345; qm_keyst=global");
+    const res = await p.getRecommendPlaylists("uin=99999; qm_keyst=user");
+
+    expect(res).toEqual([
+      { id: "202", name: "User Rec", coverUrl: "http://cover2", songCount: 80, platform: "qq" },
+    ]);
+    expect(mockGet).toHaveBeenCalledWith("/getSongLists", {
+      params: { categoryId: 10000000, pageSize: 10, cookie: "uin=99999; qm_keyst=user" },
+    });
+  });
+});
+

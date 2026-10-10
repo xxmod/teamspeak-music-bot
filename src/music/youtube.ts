@@ -197,7 +197,7 @@ export class YouTubeProvider implements MusicProvider {
     }
   }
 
-  async getRecommendPlaylists(): Promise<Playlist[]> {
+  async getRecommendPlaylists(_cookieOverride?: string): Promise<Playlist[]> {
     return [];
   }
 

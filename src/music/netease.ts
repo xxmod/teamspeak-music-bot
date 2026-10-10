@@ -225,9 +225,9 @@ export class NeteaseProvider implements MusicProvider {
     return mapNeteaseSongs(res.data?.songs);
   }
 
-  async getRecommendPlaylists(): Promise<Playlist[]> {
+  async getRecommendPlaylists(cookieOverride?: string): Promise<Playlist[]> {
     const res = await this.api.get("/personalized", {
-      params: { limit: 10, ...this.cookieParams },
+      params: { limit: 10, ...this.getCookieParams(cookieOverride) },
     });
     return (res.data?.result ?? []).map((p: any) => ({
       id: String(p.id),

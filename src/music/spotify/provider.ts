@@ -55,7 +55,7 @@ export class SpotifyProvider implements MusicProvider {
     return this.api.getAlbumTracks(albumId);
   }
 
-  async getRecommendPlaylists(): Promise<Playlist[]> {
+  async getRecommendPlaylists(_cookieOverride?: string): Promise<Playlist[]> {
     return [];
   }
 

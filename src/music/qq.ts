@@ -571,9 +571,9 @@ export class QQMusicProvider implements MusicProvider {
     };
   }
 
-  async getRecommendPlaylists(): Promise<Playlist[]> {
+  async getRecommendPlaylists(cookieOverride?: string): Promise<Playlist[]> {
     const res = await this.api.get("/getSongLists", {
-      params: { categoryId: 10000000, pageSize: 10, ...this.cookieParams },
+      params: { categoryId: 10000000, pageSize: 10, ...this.getCookieParams(cookieOverride) },
     });
     return (res.data?.response?.data?.list ?? []).map((p: any) => ({
       id: String(p.dissid),

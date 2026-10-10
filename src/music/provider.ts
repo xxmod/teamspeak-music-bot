@@ -123,7 +123,7 @@ export interface MusicProvider {
   getQuality(): string;
   getSongDetail(songId: string): Promise<Song | null>;
   getPlaylistSongs(playlistId: string): Promise<Song[]>;
-  getRecommendPlaylists(): Promise<Playlist[]>;
+  getRecommendPlaylists(cookieOverride?: string): Promise<Playlist[]>;
   getAlbumSongs(albumId: string): Promise<Song[]>;
   getLyrics(songId: string): Promise<LyricLine[]>;
   getQrCode(): Promise<QrCodeResult>;

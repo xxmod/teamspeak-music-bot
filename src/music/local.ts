@@ -550,7 +550,7 @@ export class LocalMusicProvider implements MusicProvider {
     return [];
   }
 
-  async getRecommendPlaylists(): Promise<Playlist[]> {
+  async getRecommendPlaylists(_cookieOverride?: string): Promise<Playlist[]> {
     return [];
   }
 

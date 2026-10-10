@@ -441,7 +441,7 @@ export class JellyfinProvider implements MusicProvider {
     return this.mapSongs(res?.Items);
   }
 
-  async getRecommendPlaylists(): Promise<Playlist[]> {
+  async getRecommendPlaylists(_cookieOverride?: string): Promise<Playlist[]> {
     return this.getUserPlaylists();
   }
 

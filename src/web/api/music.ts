@@ -283,7 +283,8 @@ export function createMusicRouter(
     try {
       const provider = resolveProvider(req.query.platform, res);
       if (!provider) return;
-      const playlists = await provider.getRecommendPlaylists();
+      const userCookie = getUserCookieForPlatform(req, provider.platform);
+      const playlists = await provider.getRecommendPlaylists(userCookie);
       res.json({ playlists });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });

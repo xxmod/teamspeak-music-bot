@@ -508,7 +508,7 @@ export class BiliBiliProvider implements MusicProvider {
   // --- B站推荐内容 ---
 
   /** 热门视频 (无需登录) */
-  async getRecommendPlaylists(): Promise<Playlist[]> {
+  async getRecommendPlaylists(_cookieOverride?: string): Promise<Playlist[]> {
     // B站没有"歌单"概念，返回空
     return [];
   }

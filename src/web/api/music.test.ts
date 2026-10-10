@@ -811,3 +811,63 @@ describe("music router GET /search/all artist aggregation", () => {
   });
 });
 
+describe("music router GET /recommend/playlists user cookies", () => {
+  it("passes user cookie from db to provider.getRecommendPlaylists when logged in", async () => {
+    const netease = {
+      platform: "netease",
+      getRecommendPlaylists: vi.fn().mockResolvedValue([]),
+    } as unknown as MusicProvider;
+    const db = {
+      getUserCookie: vi.fn().mockReturnValue("MUSIC_U=my_user_cookie"),
+    } as unknown as BotDatabase;
+
+    const router = createMusicRouter(
+      netease,
+      fakeProvider("qq"),
+      fakeProvider("bilibili"),
+      pino({ level: "silent" }),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      db
+    );
+
+    const app = express();
+    app.use((req, _res, next) => {
+      (req as any).user = { id: "user-123" };
+      next();
+    });
+    app.use("/api/music", router);
+
+    const res = await request(app).get("/api/music/recommend/playlists?platform=netease");
+    expect(res.status).toBe(200);
+    expect(db.getUserCookie).toHaveBeenCalledWith("user-123", "netease");
+    expect(netease.getRecommendPlaylists).toHaveBeenCalledWith("MUSIC_U=my_user_cookie");
+  });
+
+  it("passes undefined to provider.getRecommendPlaylists when unauthenticated", async () => {
+    const netease = {
+      platform: "netease",
+      getRecommendPlaylists: vi.fn().mockResolvedValue([]),
+    } as unknown as MusicProvider;
+
+    const router = createMusicRouter(
+      netease,
+      fakeProvider("qq"),
+      fakeProvider("bilibili"),
+      pino({ level: "silent" })
+    );
+
+    const app = express();
+    app.use("/api/music", router);
+
+    const res = await request(app).get("/api/music/recommend/playlists?platform=netease");
+    expect(res.status).toBe(200);
+    expect(netease.getRecommendPlaylists).toHaveBeenCalledWith(undefined);
+  });
+});
+
+

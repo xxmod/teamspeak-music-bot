@@ -810,8 +810,9 @@ export class KugouProvider implements MusicProvider {
   // 推荐歌单 (精选/个性化歌单). Ported from reference top_playlist.js
   // (/v2/special_recommend). The misspelled keys `retrun_min` /
   // `return_special_falg` are intentional — the server expects those exact names.
-  async getRecommendPlaylists(): Promise<Playlist[]> {
+  async getRecommendPlaylists(cookieOverride?: string): Promise<Playlist[]> {
     try {
+      const cookie = cookieOverride !== undefined ? parseKugouCookie(cookieOverride) : this.cookie;
       const dateTime = Math.floor(Date.now() / 1000).toString();
       const data = await this.request({
         method: "POST",
@@ -823,7 +824,8 @@ export class KugouProvider implements MusicProvider {
           clientver: CLIENTVER,
           platform: "android",
           clienttime: dateTime,
-          userid: this.cookie.userid || 0,
+          userid: cookie.userid || 0,
+          token: cookie.token || undefined,
           module_id: 1,
           page: 1,
           pagesize: 30,
@@ -842,6 +844,7 @@ export class KugouProvider implements MusicProvider {
           retrun_min: 5,
           return_special_falg: 1,
         },
+        extraHeaders: cookieOverride ? { Cookie: cookieOverride } : undefined,
       });
       // The list is nested under one of several shapes across API versions.
       const d = data?.data ?? {};
