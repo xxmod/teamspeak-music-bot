@@ -1,0 +1,46 @@
+{
+  "name": "koishi-plugin-teamspeak-music-bot",
+  "description": "Koishi 插件：对接 TeamSpeak Music Bot，支持在群聊中点歌、切歌、搜索、播放控制等",
+  "version": "1.0.0",
+  "main": "lib/index.js",
+  "typings": "lib/index.d.ts",
+  "files": [
+    "lib",
+    "README.md"
+  ],
+  "koishi": {
+    "description": {
+      "zh": "TeamSpeak 音乐机器人对接插件，支持聊天点歌、插播、搜索、音量控制等"
+    },
+    "service": {
+      "required": []
+    }
+  },
+  "keywords": [
+    "koishi",
+    "plugin",
+    "teamspeak",
+    "teamspeak3",
+    "music",
+    "bot",
+    "tsmb"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "prepublishOnly": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xxmod/teamspeak-music-bot.git",
+    "directory": "koishi"
+  },
+  "peerDependencies": {
+    "koishi": "^4.18.0"
+  },
+  "devDependencies": {
+    "koishi": "^4.18.0",
+    "typescript": "^5.0.0"
+  }
+}
