@@ -40,6 +40,7 @@ function fakeDatabase(): BotDatabase {
       }
       return false;
     }),
+    setUserCookieRecordHistory: vi.fn(),
   } as unknown as BotDatabase;
 }
 
@@ -154,5 +155,32 @@ describe("user cookies router", () => {
     const okQrRes = await request(app).post("/api/user/cookies/qrcode").send({ platform: "netease" });
     expect(okQrRes.status).toBe(200);
     expect(netease.getQrCode).toHaveBeenCalled();
+  });
+
+  it("toggles playback history for netease and bilibili and rejects unsupported platforms", async () => {
+    const { app, db } = mount({ id: "u-1", role: "member" });
+
+    // netease enabled
+    const res1 = await request(app)
+      .post("/api/user/cookies/netease/history")
+      .send({ enabled: true });
+    expect(res1.status).toBe(200);
+    expect(res1.body).toEqual({ success: true, platform: "netease", recordHistory: true });
+    expect(db.setUserCookieRecordHistory).toHaveBeenCalledWith("u-1", "netease", true);
+
+    // bilibili enabled
+    const res2 = await request(app)
+      .post("/api/user/cookies/bilibili/history")
+      .send({ enabled: false });
+    expect(res2.status).toBe(200);
+    expect(res2.body).toEqual({ success: true, platform: "bilibili", recordHistory: false });
+    expect(db.setUserCookieRecordHistory).toHaveBeenCalledWith("u-1", "bilibili", false);
+
+    // qq rejected
+    const res3 = await request(app)
+      .post("/api/user/cookies/qq/history")
+      .send({ enabled: true });
+    expect(res3.status).toBe(400);
+    expect(res3.body.error).toMatch(/Only netease and bilibili/);
   });
 });

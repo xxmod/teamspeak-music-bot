@@ -203,3 +203,36 @@ describe("pickStableAudioUrl (#161 long streams dying mid-play)", () => {
     expect((await p.getSongUrl("BV1abc"))?.url).toBe(upos);
   });
 });
+
+describe("BiliBiliProvider.scrobble", () => {
+  it("posts to heartbeat API with cid, played_time, start_ts and csrf", async () => {
+    const p = new BiliBiliProvider();
+    (p as any).cidCache.set("BV1test", 99999);
+    const post = vi.fn().mockResolvedValue({ data: { code: 0 } });
+    (p as any).api = { post };
+
+    const ok = await p.scrobble("BV1test", 45, "SESSDATA=sess; bili_jct=my_csrf_token");
+    expect(ok).toBe(true);
+    expect(post).toHaveBeenCalledTimes(1);
+    const [url, body, config] = post.mock.calls[0];
+    expect(url).toBe("/x/click-interface/web/heartbeat");
+    expect(body).toContain("bvid=BV1test");
+    expect(body).toContain("cid=99999");
+    expect(body).toContain("played_time=45");
+    expect(body).toContain("csrf=my_csrf_token");
+    expect(config.headers.Cookie).toBe("SESSDATA=sess; bili_jct=my_csrf_token");
+  });
+
+  it("returns false if cid is not found or heartbeat request fails", async () => {
+    const p = new BiliBiliProvider();
+    (p as any).getCid = vi.fn().mockResolvedValue(null);
+
+    const ok = await p.scrobble("BV1notfound", 30);
+    expect(ok).toBe(false);
+
+    (p as any).getCid = vi.fn().mockResolvedValue(12345);
+    (p as any).api = { post: vi.fn().mockRejectedValue(new Error("Net error")) };
+    const ok2 = await p.scrobble("BV1error", 30);
+    expect(ok2).toBe(false);
+  });
+});

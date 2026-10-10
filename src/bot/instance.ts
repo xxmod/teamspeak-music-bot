@@ -213,6 +213,8 @@ export class BotInstance extends EventEmitter {
   private jellyfinReporter: JellyfinPlaybackReporter | null = null;
   /** Debounce handle for the live-queue snapshot writer (Feature 2, #119). */
   private snapshotTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Currently playing track info for platform playback reporting (NetEase/B站). */
+  private currentPlayingTrack: { song: QueuedSong; reported: boolean } | null = null;
 
   constructor(options: BotInstanceOptions) {
     super();
@@ -344,6 +346,9 @@ export class BotInstance extends EventEmitter {
     this.player.on("trackEnd", () => {
       const endedSong = this.queue.current();
       const endedSession = this.player.getPlaybackSessionId();
+
+      this.finishCurrentPlayingTrack?.(true);
+
       this.resumeInterruptedStream()
         .catch(() => {
           this.logger.warn({ sessionId: endedSession, reason: "recovery-error" }, "Stream resume failed");
@@ -660,6 +665,8 @@ export class BotInstance extends EventEmitter {
     }
     this.spotifyController.stop();
     this.currentSourceIsSpotify = false;
+    this.finishCurrentPlayingTrack?.(false);
+    this.currentPlayingTrack = null;
     this.player.stop();
     this.jellyfinReporter?.onStop();
     this.queue.clear();
@@ -874,6 +881,7 @@ export class BotInstance extends EventEmitter {
     cmd: ParsedCommand,
     msg?: TS3TextMessage,
     requesterName = this.requesterNameFromMessage(msg),
+    requesterId?: string,
   ): Promise<string | null> {
     // Reject commands that would push audio when the bot isn't connected:
     // otherwise ffmpeg spawns and voice goes to a half-initialized or
@@ -901,12 +909,12 @@ export class BotInstance extends EventEmitter {
       case "find":
         return this.cmdSearch(cmd);
       case "play":
-        return this.cmdPlay(cmd, requesterName);
+        return this.cmdPlay(cmd, requesterName, requesterId);
       case "add":
-        return this.cmdAdd(cmd, requesterName);
+        return this.cmdAdd(cmd, requesterName, requesterId);
       case "playnext":
       case "pn":
-        return this.cmdPlayNext(cmd, requesterName);
+        return this.cmdPlayNext(cmd, requesterName, requesterId);
       case "pause":
         return this.cmdPause();
       case "resume":
@@ -932,13 +940,13 @@ export class BotInstance extends EventEmitter {
       case "mode":
         return this.cmdMode(cmd);
       case "playlist":
-        return this.cmdPlaylist(cmd, requesterName);
+        return this.cmdPlaylist(cmd, requesterName, requesterId);
       case "album":
-        return this.cmdAlbum(cmd, requesterName);
+        return this.cmdAlbum(cmd, requesterName, requesterId);
       case "fm":
-        return this.cmdFm(cmd, requesterName);
+        return this.cmdFm(cmd, requesterName, requesterId);
       case "artist":
-        return this.cmdArtist(cmd, requesterName);
+        return this.cmdArtist(cmd, requesterName, requesterId);
       case "vote":
         return this.cmdVote(msg);
       case "lyrics":
@@ -1019,9 +1027,15 @@ export class BotInstance extends EventEmitter {
   private withRequester<T extends Song | QueuedSong>(
     song: T,
     requesterName?: string,
-  ): T & { requestedBy?: string } {
+    requesterId?: string,
+  ): T & { requestedBy?: string; requestedById?: string } {
     const requestedBy = requesterName?.trim();
-    return requestedBy ? { ...song, requestedBy } : { ...song };
+    const requestedById = requesterId?.trim();
+    return {
+      ...song,
+      ...(requestedBy ? { requestedBy } : {}),
+      ...(requestedById ? { requestedById } : {}),
+    };
   }
 
   /** Resolve URL for a song and start playing it. Skips to next if URL fails. */
@@ -1128,6 +1142,8 @@ export class BotInstance extends EventEmitter {
           // spotify→spotify handoff is unaffected.
           this.player.resume();
         }
+        this.finishCurrentPlayingTrack?.(false);
+        this.currentPlayingTrack = { song, reported: false };
         this.currentSourceIsSpotify = true;
         this.jellyfinReporter?.onStop();
         song.url = result.url;
@@ -1159,6 +1175,9 @@ export class BotInstance extends EventEmitter {
       song.url = result.url;
       // 试听片段用试听时长（让 player nearEnd 正确触发自动切歌）；完整曲回退 song.duration
       this.effectiveDuration = result.trialDuration ?? song.duration;
+
+      this.finishCurrentPlayingTrack?.(false);
+      this.currentPlayingTrack = { song, reported: false };
 
       let gainDb = 0;
       if (this.config.audioNormalization?.enabled) {
@@ -1465,12 +1484,12 @@ export class BotInstance extends EventEmitter {
     ].join("\n");
   }
 
-  private async cmdPlay(cmd: ParsedCommand, requesterName?: string): Promise<string> {
+  private async cmdPlay(cmd: ParsedCommand, requesterName?: string, requesterId?: string): Promise<string> {
     if (!cmd.args) return `Usage: ${this.config.commandPrefix}play <song name | #N | id <id> | URL>`;
     const { song, error } = await this.resolvePlayQuery(cmd);
     if (error) return error;
     const song0 = song!;
-    const ok = await this.playSingleSong(song0, requesterName);
+    const ok = await this.playSingleSong(song0, requesterName, requesterId);
     if (!ok) return `Cannot play: ${song0.name}`;
     return `Now playing: ${song0.name} - ${song0.artist}`;
   }
@@ -1487,13 +1506,14 @@ export class BotInstance extends EventEmitter {
    * Shared by chat !play and the web /play-song route so the toggle decision
    * lives in exactly one place (#119). Returns true if a track started playing.
    */
-  async playSingleSong(song: QueuedSong, requesterName?: string): Promise<boolean> {
-    const s = this.withRequester(song, requesterName);
+  async playSingleSong(song: QueuedSong, requesterName?: string, requesterId?: string): Promise<boolean> {
+    const s = this.withRequester(song, requesterName, requesterId);
     if (this.config.playKeepsQueue && !this.queue.isEmpty()) {
       const insertedAt =
         this.queue.getCurrentIndex() < 0
           ? this.queue.size()
           : this.queue.getCurrentIndex() + 1;
+      this.finishCurrentPlayingTrack?.(false);
       this.player.stop();
       this.disableFmMode();
       this.queue.addNext(s);
@@ -1505,6 +1525,7 @@ export class BotInstance extends EventEmitter {
     // Legacy replace behavior (default).
     const previous = this.queue.current();
     if (previous && !this.isSameSong(previous, s)) {
+      this.finishCurrentPlayingTrack?.(false);
       this.player.stop();
     }
     this.queue.clear();
@@ -1559,14 +1580,14 @@ export class BotInstance extends EventEmitter {
     this.emit("stateChange");
   }
 
-  private async cmdAdd(cmd: ParsedCommand, requesterName?: string): Promise<string> {
+  private async cmdAdd(cmd: ParsedCommand, requesterName?: string, requesterId?: string): Promise<string> {
     if (!cmd.args) return `Usage: ${this.config.commandPrefix}add <song name | #N | id <id> | URL>`;
     const { song, error } = await this.resolvePlayQuery(cmd);
     if (error) return error;
     const s = song!;
 
     const wasIdle = this.player.getState() === "idle";
-    this.queue.add(this.withRequester(s, requesterName));
+    this.queue.add(this.withRequester(s, requesterName, requesterId));
 
     // If nothing was playing, start this newly-added song immediately.
     // Matches /api/player/:id/add-by-id behavior so both add paths feel
@@ -1584,7 +1605,7 @@ export class BotInstance extends EventEmitter {
     return `Added to queue: ${s.name} - ${s.artist} (position ${this.queue.size()})`;
   }
 
-  private async cmdPlayNext(cmd: ParsedCommand, requesterName?: string): Promise<string> {
+  private async cmdPlayNext(cmd: ParsedCommand, requesterName?: string, requesterId?: string): Promise<string> {
     if (!cmd.args) return `Usage: ${this.config.commandPrefix}playnext <song name | #N | id <id> | URL>`;
     const { song, error } = await this.resolvePlayQuery(cmd);
     if (error) return error;
@@ -1600,7 +1621,7 @@ export class BotInstance extends EventEmitter {
       this.queue.getCurrentIndex() < 0
         ? this.queue.size()
         : this.queue.getCurrentIndex() + 1;
-    this.queue.addNext(this.withRequester(s, requesterName));
+    this.queue.addNext(this.withRequester(s, requesterName, requesterId));
 
     if (wasIdle) {
       this.queue.playAt(insertedAt);
@@ -1659,6 +1680,8 @@ export class BotInstance extends EventEmitter {
       this.spotifyController.stop();
     }
     this.currentSourceIsSpotify = false;
+    this.finishCurrentPlayingTrack?.(false);
+    this.currentPlayingTrack = null;
     this.player.stop();
     this.jellyfinReporter?.onStop();
     this.autoPaused = false;
@@ -1748,6 +1771,8 @@ export class BotInstance extends EventEmitter {
   private cmdClear(): string {
     this.spotifyController.stop();
     this.currentSourceIsSpotify = false;
+    this.finishCurrentPlayingTrack?.(false);
+    this.currentPlayingTrack = null;
     this.player.stop();
     this.jellyfinReporter?.onStop();
     this.queue.clear();
@@ -1803,7 +1828,7 @@ export class BotInstance extends EventEmitter {
     return `Play mode set to: ${cmd.args}`;
   }
 
-  private async cmdPlaylist(cmd: ParsedCommand, requesterName?: string): Promise<string> {
+  private async cmdPlaylist(cmd: ParsedCommand, requesterName?: string, requesterId?: string): Promise<string> {
     if (!cmd.args) return "Usage: !playlist <playlist name, ID or link>";
 
     // A playlist link (#160) names its own platform, so it wins over flags.
@@ -1859,11 +1884,12 @@ export class BotInstance extends EventEmitter {
     const songs = await provider.getPlaylistSongs(playlistId);
     if (songs.length === 0) return "Playlist is empty or not found";
 
+    this.finishCurrentPlayingTrack?.(false);
     this.player.stop();
     this.queue.clear();
     this.disableFmMode();
     for (const song of songs) {
-      this.queue.add(this.withRequester({ ...song, platform: provider.platform }, requesterName));
+      this.queue.add(this.withRequester({ ...song, platform: provider.platform }, requesterName, requesterId));
     }
     const first = this.queue.play();
     if (first) await this.resolveAndPlay(first);
@@ -1872,7 +1898,7 @@ export class BotInstance extends EventEmitter {
     return `Loaded ${songs.length} songs. Now playing: ${first?.name ?? "unknown"}`;
   }
 
-  private async cmdAlbum(cmd: ParsedCommand, requesterName?: string): Promise<string> {
+  private async cmdAlbum(cmd: ParsedCommand, requesterName?: string, requesterId?: string): Promise<string> {
     if (!cmd.args) return "Usage: !album <album name or ID>";
     const provider = this.getProvider(cmd.flags);
 
@@ -1896,11 +1922,12 @@ export class BotInstance extends EventEmitter {
     const songs = await provider.getAlbumSongs(albumId);
     if (songs.length === 0) return "Album is empty or not found";
 
+    this.finishCurrentPlayingTrack?.(false);
     this.player.stop();
     this.queue.clear();
     this.disableFmMode();
     for (const song of songs) {
-      this.queue.add(this.withRequester({ ...song, platform: provider.platform }, requesterName));
+      this.queue.add(this.withRequester({ ...song, platform: provider.platform }, requesterName, requesterId));
     }
     const first = this.queue.play();
     if (first) await this.resolveAndPlay(first);
@@ -1909,14 +1936,15 @@ export class BotInstance extends EventEmitter {
     return `Loaded ${songs.length} songs. Now playing: ${first?.name ?? "unknown"}`;
   }
 
-  private async cmdFm(cmd: ParsedCommand, requesterName?: string): Promise<string> {
-    return this.startFm(this.getProvider(cmd.flags), requesterName);
+  private async cmdFm(cmd: ParsedCommand, requesterName?: string, requesterId?: string): Promise<string> {
+    return this.startFm(this.getProvider(cmd.flags), requesterName, undefined, requesterId);
   }
 
   async startFm(
     provider: MusicProvider = this.neteaseProvider,
     requesterName?: string,
     cookieOverride?: string,
+    requesterId?: string,
   ): Promise<string> {
     // Match the !fm chat-command guard: refuse before mutating the queue when
     // offline, so the web /fm route can't wipe the queue + flip into FM mode
@@ -1945,10 +1973,11 @@ export class BotInstance extends EventEmitter {
     if (songs.length === 0)
       return "No FM songs available (need to login first)";
 
+    this.finishCurrentPlayingTrack?.(false);
     this.player.stop();
     this.queue.clear();
     for (const song of songs) {
-      this.queue.add(this.withRequester({ ...song, platform: provider.platform }, requesterName));
+      this.queue.add(this.withRequester({ ...song, platform: provider.platform }, requesterName, requesterId));
     }
     this.queue.setMode(PlayMode.Sequential);
     this.isFmMode = true;
@@ -1988,7 +2017,7 @@ export class BotInstance extends EventEmitter {
     return `${label} started: ${currentTrack.name} - ${currentTrack.artist}`;
   }
 
-  private async cmdArtist(cmd: ParsedCommand, requesterName?: string): Promise<string> {
+  private async cmdArtist(cmd: ParsedCommand, requesterName?: string, requesterId?: string): Promise<string> {
     if (!cmd.args) return "Usage: !artist <artist name>";
     const provider = this.getProvider(cmd.flags);
     const result = await provider.search(cmd.args, 50);
@@ -2005,11 +2034,12 @@ export class BotInstance extends EventEmitter {
       filtered = result.songs.slice(0, 20);
     }
 
+    this.finishCurrentPlayingTrack?.(false);
     this.player.stop();
     this.queue.clear();
     this.disableFmMode();
     for (const song of filtered) {
-      this.queue.add(this.withRequester({ ...song, platform: provider.platform }, requesterName));
+      this.queue.add(this.withRequester({ ...song, platform: provider.platform }, requesterName, requesterId));
     }
     this.queue.setMode(PlayMode.Loop);
     this.player.resetFailures();
@@ -2335,6 +2365,8 @@ export class BotInstance extends EventEmitter {
             this.spotifyController.stop();
             this.currentSourceIsSpotify = false;
           }
+          this.finishCurrentPlayingTrack?.(false);
+          this.currentPlayingTrack = null;
           this.player.stop();
           this.profileManager.onSongChange(null).catch(() => {});
         }
@@ -2348,6 +2380,57 @@ export class BotInstance extends EventEmitter {
       this.sweepLocalAudio("playback_finished");
       this.isAdvancing = false;
     }
+  }
+
+  /**
+   * Finalize and scrobble playback history for the current track.
+   * - isNaturalEnd = true: song completed naturally (trackEnd event).
+   * - isNaturalEnd = false: song was stopped or switched (skip / stop / new track).
+   */
+  finishCurrentPlayingTrack(isNaturalEnd = false): void {
+    if (!this.currentPlayingTrack || this.currentPlayingTrack.reported) {
+      return;
+    }
+    const track = this.currentPlayingTrack;
+    track.reported = true;
+    const elapsed = this.player.getElapsed();
+    const duration = this.effectiveDuration ?? track.song.duration;
+    const playedSec = isNaturalEnd ? (elapsed || duration) : elapsed;
+    this.reportTrackPlayback(track.song, playedSec);
+  }
+
+  private reportTrackPlayback(song: QueuedSong, playedSeconds: number): void {
+    if (song.platform !== "netease" && song.platform !== "bilibili") {
+      return;
+    }
+    const playedSec = Math.floor(playedSeconds);
+    if (playedSec < 1) {
+      return;
+    }
+
+    const userId =
+      song.requestedById ||
+      (song.requestedBy ? this.database.findUserIdByUsername(song.requestedBy) : null);
+    if (!userId) {
+      return;
+    }
+
+    const entry = this.database.getUserCookieEntry(userId, song.platform);
+    if (!entry || !entry.cookie || !entry.recordHistory) {
+      return;
+    }
+
+    const provider = this.getProviderFor(song.platform);
+    if (!provider.scrobble) {
+      return;
+    }
+
+    provider.scrobble(song.id, playedSec, entry.cookie).catch((err) => {
+      this.logger.warn(
+        { err: err instanceof Error ? err.message : String(err), songId: song.id, platform: song.platform },
+        "Failed to report playback history",
+      );
+    });
   }
 
   private extractId(input: string): string {

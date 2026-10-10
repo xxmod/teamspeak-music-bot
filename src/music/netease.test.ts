@@ -311,3 +311,66 @@ describe("NeteaseProvider.getRecommendPlaylists", () => {
   });
 });
 
+describe("NeteaseProvider.scrobble", () => {
+  it("reports startplay and play via clientlog eapi endpoint", async () => {
+    const p = new NeteaseProvider("http://x");
+    const post = vi.fn().mockResolvedValue({ status: 200, data: { code: 200 } });
+    (p as any).clientlogClient = { post };
+
+    const ok = await p.scrobble("123456", 120, "MUSIC_U=user_cookie; __csrf=test_csrf");
+    expect(ok).toBe(true);
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post).toHaveBeenNthCalledWith(
+      1,
+      "/eapi/feedback/weblog",
+      expect.stringContaining("params="),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "Content-Type": "application/x-www-form-urlencoded",
+          Cookie: expect.stringContaining("MUSIC_U=user_cookie"),
+        }),
+      }),
+    );
+    expect(post).toHaveBeenNthCalledWith(
+      2,
+      "/eapi/feedback/weblog",
+      expect.stringContaining("params="),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "Content-Type": "application/x-www-form-urlencoded",
+          Cookie: expect.stringContaining("MUSIC_U=user_cookie"),
+        }),
+      }),
+    );
+  });
+
+  it("returns false if MUSIC_U is missing or songId is invalid", async () => {
+    const p = new NeteaseProvider("http://x");
+    const post = vi.fn();
+    (p as any).clientlogClient = { post };
+
+    // Missing MUSIC_U
+    const okNoCookie = await p.scrobble("123456", 10, "other_cookie=1");
+    expect(okNoCookie).toBe(false);
+    expect(post).not.toHaveBeenCalled();
+
+    // Invalid song id
+    const okInvalidId = await p.scrobble("not-a-number", 10, "MUSIC_U=user_cookie");
+    expect(okInvalidId).toBe(false);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("returns false if response code is not 200 or request fails", async () => {
+    const p = new NeteaseProvider("http://x");
+    const post = vi.fn().mockResolvedValue({ status: 500, data: { code: 500 } });
+    (p as any).clientlogClient = { post };
+
+    const ok = await p.scrobble("123456", 10, "MUSIC_U=user_cookie");
+    expect(ok).toBe(false);
+
+    (p as any).clientlogClient.post = vi.fn().mockRejectedValue(new Error("Network error"));
+    const ok2 = await p.scrobble("123456", 10, "MUSIC_U=user_cookie");
+    expect(ok2).toBe(false);
+  });
+});
+

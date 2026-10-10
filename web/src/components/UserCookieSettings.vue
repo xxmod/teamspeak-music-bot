@@ -60,6 +60,29 @@
           </button>
         </div>
 
+        <!-- Playback History Reporting Option -->
+        <div v-if="isConfigured(p.id) && p.supportsHistory" class="history-option-wrap">
+          <div class="history-option" :class="{ enabled: isHistoryEnabled(p.id) }">
+            <div class="history-icon-box">
+              <Icon icon="mdi:history" class="history-icon" />
+            </div>
+            <div class="history-text">
+              <div class="history-header-line">
+                <span class="history-label">记录播放历史到平台</span>
+              </div>
+            </div>
+            <label class="switch-toggle" :title="isHistoryEnabled(p.id) ? '点击关闭历史记录上报' : '点击开启历史记录上报'">
+              <input
+                type="checkbox"
+                :checked="isHistoryEnabled(p.id)"
+                :disabled="togglingHistory[p.id]"
+                @change="toggleHistory(p.id, $event)"
+              />
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+        </div>
+
         <!-- QR Code Section -->
         <div v-if="activeMode[p.id] === 'qr'" class="qr-section">
           <div v-if="qrStates[p.id]?.loading" class="qr-loading">
@@ -125,6 +148,7 @@ interface PlatformDef {
   qrApp: string;
   cookieTip?: string;
   cookiePlaceholder: string;
+  supportsHistory?: boolean;
 }
 
 const PLATFORMS: PlatformDef[] = [
@@ -135,6 +159,7 @@ const PLATFORMS: PlatformDef[] = [
     iconClass: '',
     qrApp: '网易云音乐',
     cookiePlaceholder: '粘贴网易云音乐Cookie (MUSIC_U=...)',
+    supportsHistory: true,
   },
   {
     id: 'qq',
@@ -143,6 +168,7 @@ const PLATFORMS: PlatformDef[] = [
     iconClass: '',
     qrApp: '手机QQ',
     cookiePlaceholder: '粘贴QQ音乐Cookie (uin=...; qm_keyst=...)',
+    supportsHistory: false,
   },
   {
     id: 'bilibili',
@@ -151,6 +177,7 @@ const PLATFORMS: PlatformDef[] = [
     iconClass: 'bilibili-icon',
     qrApp: '哔哩哔哩',
     cookiePlaceholder: '粘贴哔哩哔哩Cookie (SESSDATA=...)',
+    supportsHistory: true,
   },
   {
     id: 'kugou',
@@ -160,6 +187,7 @@ const PLATFORMS: PlatformDef[] = [
     qrApp: '酷狗音乐',
     cookieTip: '酷狗音乐推荐点击上方「扫码登录」以完整同步自建歌单与我喜欢（因官方限制，网页端复制的 Cookie 仅能试听，无法拉取个人私有歌单）',
     cookiePlaceholder: '推荐使用上方「扫码登录」自动获取全部歌单；或粘贴酷狗 Cookie',
+    supportsHistory: false,
   },
 ];
 
@@ -187,7 +215,7 @@ const visiblePlatforms = computed(() => {
   });
 });
 
-const cookiesData = reactive<Record<string, { configured: boolean; updatedAt: number }>>({});
+const cookiesData = reactive<Record<string, { configured: boolean; updatedAt?: number; recordHistory?: boolean }>>({});
 const activeMode = reactive<Record<string, 'none' | 'qr' | 'cookie'>>({
   netease: 'none',
   qq: 'none',
@@ -208,9 +236,39 @@ const qrStates = reactive<Record<string, QrState>>({
 });
 const saving = reactive<Record<string, boolean>>({});
 const deleting = reactive<Record<string, boolean>>({});
+const togglingHistory = reactive<Record<string, boolean>>({});
 
 function isConfigured(platform: string): boolean {
   return Boolean(cookiesData[platform]?.configured);
+}
+
+function isHistoryEnabled(platform: string): boolean {
+  return Boolean(cookiesData[platform]?.recordHistory);
+}
+
+async function toggleHistory(platform: string, event: Event) {
+  const target = event.target as HTMLInputElement;
+  const enabled = target.checked;
+  togglingHistory[platform] = true;
+  try {
+    const res = await axios.post(`/api/user/cookies/${platform}/history`, { enabled });
+    if (res.data?.success) {
+      if (!cookiesData[platform]) {
+        cookiesData[platform] = { configured: true, updatedAt: Date.now(), recordHistory: enabled };
+      } else {
+        cookiesData[platform].recordHistory = enabled;
+      }
+      store.notify(
+        `${PLATFORMS.find((p) => p.id === platform)?.name || platform} 播放历史上报已${enabled ? '开启' : '关闭'}`,
+        'info'
+      );
+    }
+  } catch (err: any) {
+    target.checked = !enabled;
+    store.notify(err?.response?.data?.error || err?.response?.data?.message || '更新历史记录设置失败', 'error');
+  } finally {
+    togglingHistory[platform] = false;
+  }
 }
 
 async function fetchCookies() {
@@ -607,5 +665,119 @@ onUnmounted(() => {
 
 .btn-save {
   align-self: flex-end;
+}
+
+.history-option-wrap {
+  margin-top: 14px;
+  margin-bottom: 4px;
+}
+
+.history-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  transition: all var(--transition-fast);
+
+  &:hover {
+    border-color: var(--color-primary-30, rgba(51, 94, 234, 0.3));
+  }
+
+  &.enabled {
+    border-color: var(--color-primary);
+    background: rgba(51, 94, 234, 0.05);
+
+    .history-icon-box {
+      color: var(--color-primary);
+      background: var(--color-primary-10, rgba(51, 94, 234, 0.12));
+    }
+  }
+}
+
+.history-icon-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  background: var(--hover-bg);
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  transition: all var(--transition-fast);
+
+  .history-icon {
+    font-size: 18px;
+  }
+}
+
+.history-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.history-header-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.history-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* Modern Switch Toggle */
+.switch-toggle {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 22px;
+  flex-shrink: 0;
+  cursor: pointer;
+
+  input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+
+    &:checked + .switch-slider {
+      background-color: var(--color-primary);
+
+      &:before {
+        transform: translateX(18px);
+      }
+    }
+
+    &:disabled + .switch-slider {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+  }
+
+  .switch-slider {
+    position: absolute;
+    inset: 0;
+    background-color: var(--border-color);
+    border-radius: 22px;
+    transition: all var(--transition-fast);
+
+    &:before {
+      position: absolute;
+      content: "";
+      height: 16px;
+      width: 16px;
+      left: 3px;
+      bottom: 3px;
+      background-color: #ffffff;
+      border-radius: 50%;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+      transition: all var(--transition-fast);
+    }
+  }
 }
 </style>

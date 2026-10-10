@@ -2188,3 +2188,137 @@ describe("BotInstance trackEnd — stale playback sessions", () => {
     expect(ctx.advances).toEqual([]);
   });
 });
+
+describe("BotInstance - Playback history reporting (NetEase & Bilibili scrobble)", () => {
+  function makeReportingContext() {
+    const neteaseScrobble = vi.fn().mockResolvedValue(true);
+    const bilibiliScrobble = vi.fn().mockResolvedValue(true);
+    const db = {
+      findUserIdByUsername: vi.fn((username: string) => (username === "alice" ? "u-alice" : null)),
+      getUserCookieEntry: vi.fn((userId: string, platform: string) => {
+        if (userId === "u-alice" && platform === "netease") {
+          return { cookie: "MUSIC_U=alice_token", recordHistory: true };
+        }
+        if (userId === "u-bob" && platform === "bilibili") {
+          return { cookie: "SESSDATA=bob_token", recordHistory: true };
+        }
+        if (userId === "u-no-history") {
+          return { cookie: "token", recordHistory: false };
+        }
+        return null;
+      }),
+    };
+
+    const ctx: any = {
+      connected: true,
+      currentPlayingTrack: null,
+      effectiveDuration: 240,
+      database: db,
+      player: {
+        getElapsed: vi.fn().mockReturnValue(80),
+        stop: vi.fn(),
+        getPlaybackSessionId: vi.fn().mockReturnValue(1),
+      },
+      logger: {
+        warn: vi.fn(),
+        info: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+      },
+      getProviderFor: vi.fn((platform: string) => {
+        if (platform === "netease") return { platform: "netease", scrobble: neteaseScrobble };
+        if (platform === "bilibili") return { platform: "bilibili", scrobble: bilibiliScrobble };
+        return { platform };
+      }),
+      finishCurrentPlayingTrack: (BotInstance.prototype as any).finishCurrentPlayingTrack,
+      reportTrackPlayback: (BotInstance.prototype as any).reportTrackPlayback,
+    };
+
+    return { ctx, neteaseScrobble, bilibiliScrobble, db };
+  }
+
+  it("reports playback on natural track end using duration or elapsed", () => {
+    const { ctx, neteaseScrobble } = makeReportingContext();
+    ctx.currentPlayingTrack = {
+      song: { id: "1001", name: "Song 1", platform: "netease", duration: 200, requestedById: "u-alice" },
+      reported: false,
+    };
+    ctx.player.getElapsed.mockReturnValue(0); // 0 elapsed, falls back to effectiveDuration (240)
+
+    ctx.finishCurrentPlayingTrack(true);
+
+    expect(ctx.currentPlayingTrack.reported).toBe(true);
+    expect(neteaseScrobble).toHaveBeenCalledWith("1001", 240, "MUSIC_U=alice_token");
+
+    // Second call is idempotent
+    ctx.finishCurrentPlayingTrack(true);
+    expect(neteaseScrobble).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports playback on skip/stop using actual elapsed seconds", () => {
+    const { ctx, bilibiliScrobble } = makeReportingContext();
+    ctx.currentPlayingTrack = {
+      song: { id: "BV1abc", name: "Video Song", platform: "bilibili", duration: 300, requestedById: "u-bob" },
+      reported: false,
+    };
+    ctx.player.getElapsed.mockReturnValue(45);
+
+    ctx.finishCurrentPlayingTrack(false);
+
+    expect(ctx.currentPlayingTrack.reported).toBe(true);
+    expect(bilibiliScrobble).toHaveBeenCalledWith("BV1abc", 45, "SESSDATA=bob_token");
+  });
+
+  it("resolves userId via requestedBy username if requestedById is missing", () => {
+    const { ctx, neteaseScrobble } = makeReportingContext();
+    ctx.currentPlayingTrack = {
+      song: { id: "1002", name: "Song 2", platform: "netease", duration: 180, requestedBy: "alice" },
+      reported: false,
+    };
+    ctx.player.getElapsed.mockReturnValue(60);
+
+    ctx.finishCurrentPlayingTrack(false);
+
+    expect(ctx.database.findUserIdByUsername).toHaveBeenCalledWith("alice");
+    expect(neteaseScrobble).toHaveBeenCalledWith("1002", 60, "MUSIC_U=alice_token");
+  });
+
+  it("does not report if platform is not netease or bilibili", () => {
+    const { ctx, neteaseScrobble, bilibiliScrobble } = makeReportingContext();
+    ctx.currentPlayingTrack = {
+      song: { id: "qq123", name: "QQ Song", platform: "qq", duration: 180, requestedById: "u-alice" },
+      reported: false,
+    };
+
+    ctx.finishCurrentPlayingTrack(false);
+
+    expect(neteaseScrobble).not.toHaveBeenCalled();
+    expect(bilibiliScrobble).not.toHaveBeenCalled();
+  });
+
+  it("does not report if elapsed played seconds is less than 1 second", () => {
+    const { ctx, neteaseScrobble } = makeReportingContext();
+    ctx.currentPlayingTrack = {
+      song: { id: "1003", name: "Song 3", platform: "netease", duration: 180, requestedById: "u-alice" },
+      reported: false,
+    };
+    ctx.player.getElapsed.mockReturnValue(0.4);
+
+    ctx.finishCurrentPlayingTrack(false);
+
+    expect(neteaseScrobble).not.toHaveBeenCalled();
+  });
+
+  it("does not report if user has recordHistory disabled", () => {
+    const { ctx, neteaseScrobble } = makeReportingContext();
+    ctx.currentPlayingTrack = {
+      song: { id: "1004", name: "Song 4", platform: "netease", duration: 180, requestedById: "u-no-history" },
+      reported: false,
+    };
+    ctx.player.getElapsed.mockReturnValue(50);
+
+    ctx.finishCurrentPlayingTrack(false);
+
+    expect(neteaseScrobble).not.toHaveBeenCalled();
+  });
+});

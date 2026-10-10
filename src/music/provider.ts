@@ -21,6 +21,8 @@ export interface Song {
   /** VIP / copyright-restricted: non-VIP users can only play a trial fragment
    *  (NetEase fee=1 VIP / fee=4 album-only, or QQ pay.payplay/paytrackprice=1). */
   vip?: boolean;
+  requestedBy?: string;
+  requestedById?: string;
 }
 
 export interface SongWithUrl extends Song {
@@ -156,5 +158,12 @@ export interface MusicProvider {
     limit?: number
   ): Promise<ArtistSongPage>;
   getArtistAlbums?(artistId: string, limit?: number): Promise<Album[]>;
+  /**
+   * 上报播放记录到音乐平台（网易云 /scrobble，B站 /x/click-interface/web/heartbeat 等）。
+   * @param songId 歌曲ID
+   * @param timeSec 已播放秒数
+   * @param cookieOverride 用户个人Cookie覆盖
+   */
+  scrobble?(songId: string, timeSec: number, cookieOverride?: string): Promise<boolean>;
 }
 

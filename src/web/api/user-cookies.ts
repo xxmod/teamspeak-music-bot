@@ -47,11 +47,11 @@ export function createUserCookiesRouter(
       return;
     }
     const status = db.getUserCookies(userId);
-    const result: Record<SupportedPlatform, { configured: boolean; updatedAt?: number }> = {
-      netease: { configured: status.netease?.configured ?? false, updatedAt: status.netease?.updatedAt },
-      qq: { configured: status.qq?.configured ?? false, updatedAt: status.qq?.updatedAt },
-      kugou: { configured: status.kugou?.configured ?? false, updatedAt: status.kugou?.updatedAt },
-      bilibili: { configured: status.bilibili?.configured ?? false, updatedAt: status.bilibili?.updatedAt },
+    const result: Record<SupportedPlatform, { configured: boolean; updatedAt?: number; recordHistory?: boolean }> = {
+      netease: { configured: status.netease?.configured ?? false, updatedAt: status.netease?.updatedAt, recordHistory: status.netease?.recordHistory },
+      qq: { configured: status.qq?.configured ?? false, updatedAt: status.qq?.updatedAt, recordHistory: status.qq?.recordHistory },
+      kugou: { configured: status.kugou?.configured ?? false, updatedAt: status.kugou?.updatedAt, recordHistory: status.kugou?.recordHistory },
+      bilibili: { configured: status.bilibili?.configured ?? false, updatedAt: status.bilibili?.updatedAt, recordHistory: status.bilibili?.recordHistory },
     };
     const enabledPlatforms = SUPPORTED_PLATFORMS.filter((p) => isPlatformEnabled(p));
     res.json({ cookies: result, enabledPlatforms, ...result });
@@ -64,7 +64,7 @@ export function createUserCookiesRouter(
       res.status(401).json({ error: "unauthenticated" });
       return;
     }
-    const { platform, cookie } = req.body;
+    const { platform, cookie, recordHistory } = req.body;
     if (!platform || !SUPPORTED_PLATFORMS.includes(platform as SupportedPlatform)) {
       res.status(400).json({ error: `Unsupported platform. Supported: ${SUPPORTED_PLATFORMS.join(", ")}` });
       return;
@@ -88,9 +88,35 @@ export function createUserCookiesRouter(
       .filter(Boolean)
       .join("; ");
 
-    db.setUserCookie(userId, platform, cleanedCookie);
+    if (typeof recordHistory === "boolean") {
+      db.setUserCookie(userId, platform, cleanedCookie, recordHistory);
+    } else {
+      db.setUserCookie(userId, platform, cleanedCookie);
+    }
     logger.info({ userId, platform }, "User platform cookie saved");
     res.json({ success: true, message: "Cookie saved" });
+  });
+
+  // POST /:platform/history - Toggle playback history recording for a platform
+  router.post("/:platform/history", (req, res) => {
+    const userId = req.user?.id;
+    if (!userId) {
+      res.status(401).json({ error: "unauthenticated" });
+      return;
+    }
+    const { platform } = req.params;
+    if (platform !== "netease" && platform !== "bilibili") {
+      res.status(400).json({ error: "Only netease and bilibili support playback history recording" });
+      return;
+    }
+    const { enabled } = req.body;
+    if (typeof enabled !== "boolean") {
+      res.status(400).json({ error: "enabled (boolean) is required" });
+      return;
+    }
+    db.setUserCookieRecordHistory(userId, platform, enabled);
+    logger.info({ userId, platform, enabled }, "User platform recordHistory updated");
+    res.json({ success: true, platform, recordHistory: enabled });
   });
 
   // DELETE /:platform - Remove user cookie for a platform

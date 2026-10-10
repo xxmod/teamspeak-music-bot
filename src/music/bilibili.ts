@@ -695,4 +695,47 @@ export class BiliBiliProvider implements MusicProvider {
   async getLyrics(_songId: string): Promise<LyricLine[]> {
     return [];
   }
+
+  async scrobble(songId: string, timeSec: number, cookieOverride?: string): Promise<boolean> {
+    const { bvid, page } = parseBilibiliId(songId);
+    const cid = await this.getCid(bvid, page);
+    if (!cid) return false;
+
+    try {
+      const cookieHeader = this.getCookieHeaders(cookieOverride);
+      const cookieStr = cookieOverride !== undefined ? cookieOverride : this.cookie;
+      const csrfMatch = cookieStr.match(/(?:^|;\s*)bili_jct=([^;]+)/);
+      const csrf = csrfMatch ? csrfMatch[1] : "";
+
+      const playedTime = Math.max(0, Math.round(timeSec));
+      const params = new URLSearchParams({
+        bvid,
+        cid: String(cid),
+        played_time: String(playedTime),
+        realtime: String(playedTime),
+        start_ts: String(Math.floor(Date.now() / 1000) - playedTime),
+        type: "3",
+        dt: "2",
+        sub_type: "0",
+      });
+      if (csrf) {
+        params.append("csrf", csrf);
+      }
+
+      const res = await this.api.post(
+        "/x/click-interface/web/heartbeat",
+        params.toString(),
+        {
+          headers: {
+            ...cookieHeader,
+            "Content-Type": "application/x-www-form-urlencoded",
+            Referer: `https://www.bilibili.com/video/${bvid}`,
+          },
+        }
+      );
+      return res.data?.code === 0;
+    } catch {
+      return false;
+    }
+  }
 }

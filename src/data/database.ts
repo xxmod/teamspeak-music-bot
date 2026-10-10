@@ -175,9 +175,12 @@ export interface BotDatabase {
   getSongLoudnessCount(): number;
   checkAndSyncTargetLufs(targetLufs: number): boolean;
   // User platform cookies
-  setUserCookie(userId: string, platform: string, cookie: string): void;
+  setUserCookie(userId: string, platform: string, cookie: string, recordHistory?: boolean): void;
   getUserCookie(userId: string, platform: string): string | null;
-  getUserCookies(userId: string): Record<string, { configured: boolean; updatedAt: number }>;
+  getUserCookieEntry(userId: string, platform: string): { cookie: string; recordHistory: boolean } | null;
+  setUserCookieRecordHistory(userId: string, platform: string, recordHistory: boolean): void;
+  findUserIdByUsername(username: string): string | null;
+  getUserCookies(userId: string): Record<string, { configured: boolean; updatedAt: number; recordHistory?: boolean }>;
   deleteUserCookie(userId: string, platform: string): boolean;
   close(): void;
 }
@@ -237,6 +240,12 @@ function migrateSchema(db: Database.Database): void {
   const historyColNames = historyColumns.map((c) => c.name);
   if (!historyColNames.includes("requestedBy")) {
     db.exec("ALTER TABLE play_history ADD COLUMN requestedBy TEXT NOT NULL DEFAULT ''");
+  }
+
+  const userCookieCols = db.prepare("PRAGMA table_info(user_cookies)").all() as Array<{ name: string }>;
+  const userCookieColNames = userCookieCols.map((c) => c.name);
+  if (userCookieColNames.length > 0 && !userCookieColNames.includes("recordHistory")) {
+    db.exec("ALTER TABLE user_cookies ADD COLUMN recordHistory INTEGER NOT NULL DEFAULT 0");
   }
 }
 
@@ -379,10 +388,11 @@ function initTables(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_audio_loudness_createdAt ON audio_loudness(createdAt);
 
     CREATE TABLE IF NOT EXISTS user_cookies (
-      userId    TEXT NOT NULL,
-      platform  TEXT NOT NULL,
-      cookie    TEXT NOT NULL,
-      updatedAt INTEGER NOT NULL,
+      userId        TEXT NOT NULL,
+      platform      TEXT NOT NULL,
+      cookie        TEXT NOT NULL,
+      updatedAt     INTEGER NOT NULL,
+      recordHistory INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (userId, platform),
       FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
     );
@@ -614,17 +624,27 @@ export function createDatabase(dbPath: string): BotDatabase {
   );
 
   const upsertUserCookie = db.prepare(`
-    INSERT INTO user_cookies (userId, platform, cookie, updatedAt)
-    VALUES (@userId, @platform, @cookie, @updatedAt)
+    INSERT INTO user_cookies (userId, platform, cookie, updatedAt, recordHistory)
+    VALUES (@userId, @platform, @cookie, @updatedAt, @recordHistory)
     ON CONFLICT(userId, platform) DO UPDATE SET
       cookie = excluded.cookie,
-      updatedAt = excluded.updatedAt
+      updatedAt = excluded.updatedAt,
+      recordHistory = CASE WHEN @hasRecordHistory = 1 THEN excluded.recordHistory ELSE user_cookies.recordHistory END
+  `);
+  const updateUserCookieRecordHistory = db.prepare(`
+    UPDATE user_cookies SET recordHistory = ? WHERE userId = ? AND platform = ?
   `);
   const selectUserCookie = db.prepare(`
     SELECT cookie FROM user_cookies WHERE userId = ? AND platform = ?
   `);
+  const selectUserCookieEntry = db.prepare(`
+    SELECT cookie, recordHistory FROM user_cookies WHERE userId = ? AND platform = ?
+  `);
   const selectAllUserCookies = db.prepare(`
-    SELECT platform, updatedAt FROM user_cookies WHERE userId = ?
+    SELECT platform, updatedAt, recordHistory FROM user_cookies WHERE userId = ?
+  `);
+  const selectUserIdByUsername = db.prepare(`
+    SELECT id FROM users WHERE username = ? COLLATE NOCASE
   `);
   const deleteUserCookieStmt = db.prepare(`
     DELETE FROM user_cookies WHERE userId = ? AND platform = ?
@@ -873,12 +893,14 @@ export function createDatabase(dbPath: string): BotDatabase {
       return false;
     },
 
-    setUserCookie(userId: string, platform: string, cookie: string) {
+    setUserCookie(userId: string, platform: string, cookie: string, recordHistory?: boolean) {
       upsertUserCookie.run({
         userId,
         platform,
         cookie,
         updatedAt: Date.now(),
+        recordHistory: recordHistory ? 1 : 0,
+        hasRecordHistory: typeof recordHistory === "boolean" ? 1 : 0,
       });
     },
 
@@ -887,11 +909,30 @@ export function createDatabase(dbPath: string): BotDatabase {
       return row?.cookie ?? null;
     },
 
+    getUserCookieEntry(userId: string, platform: string) {
+      const row = selectUserCookieEntry.get(userId, platform) as { cookie: string; recordHistory: number } | undefined;
+      if (!row) return null;
+      return { cookie: row.cookie, recordHistory: Boolean(row.recordHistory) };
+    },
+
+    setUserCookieRecordHistory(userId: string, platform: string, recordHistory: boolean) {
+      updateUserCookieRecordHistory.run(recordHistory ? 1 : 0, userId, platform);
+    },
+
+    findUserIdByUsername(username: string) {
+      const row = selectUserIdByUsername.get(username) as { id: string } | undefined;
+      return row?.id ?? null;
+    },
+
     getUserCookies(userId: string) {
-      const rows = selectAllUserCookies.all(userId) as Array<{ platform: string; updatedAt: number }>;
-      const res: Record<string, { configured: boolean; updatedAt: number }> = {};
+      const rows = selectAllUserCookies.all(userId) as Array<{ platform: string; updatedAt: number; recordHistory: number }>;
+      const res: Record<string, { configured: boolean; updatedAt: number; recordHistory: boolean }> = {};
       for (const row of rows) {
-        res[row.platform] = { configured: true, updatedAt: row.updatedAt };
+        res[row.platform] = {
+          configured: true,
+          updatedAt: row.updatedAt,
+          recordHistory: Boolean(row.recordHistory),
+        };
       }
       return res;
     },

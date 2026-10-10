@@ -15,6 +15,7 @@ export interface QueuedSong {
   coverUrl: string;
   duration: number; // seconds
   requestedBy?: string;
+  requestedById?: string;
 }
 
 /**

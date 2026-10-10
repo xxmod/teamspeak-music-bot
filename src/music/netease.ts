@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import axios, { type AxiosInstance } from "axios";
 import type {
   MusicProvider,
@@ -114,6 +115,31 @@ export function parseNeteaseTrial(item: any): number | undefined {
   return Math.round(secs);
 }
 
+const NETEASE_EAPI_KEY = Buffer.from("e82ckenh8dichen8");
+
+export function encryptNeteaseEapi(url: string, object: unknown): string {
+  const text = typeof object === "object" ? JSON.stringify(object) : String(object);
+  const message = `nobody${url}use${text}md5forencrypt`;
+  const digest = crypto.createHash("md5").update(message).digest("hex");
+  const data = `${url}-36cd479b6b5-${text}-36cd479b6b5-${digest}`;
+  const cipher = crypto.createCipheriv("aes-128-ecb", NETEASE_EAPI_KEY, null);
+  return cipher.update(data, "utf8", "hex") + cipher.final("hex");
+}
+
+export function parseNeteaseCookie(cookie?: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  if (!cookie) return result;
+  for (const part of cookie.split(";")) {
+    const idx = part.indexOf("=");
+    if (idx > 0) {
+      const key = part.slice(0, idx).trim();
+      const val = part.slice(idx + 1).trim();
+      if (key) result[key] = val;
+    }
+  }
+  return result;
+}
+
 // NetEase quality levels: standard(128k) higher(192k) exhigh(320k) lossless(flac) hires(hi-res) jyeffect jymaster
 export const NETEASE_QUALITY_LEVELS = [
   { value: "standard", label: "标准 (128kbps)", bitrate: 128 },
@@ -127,6 +153,7 @@ export const NETEASE_QUALITY_LEVELS = [
 export class NeteaseProvider implements MusicProvider {
   readonly platform = "netease" as const;
   private api: AxiosInstance;
+  private clientlogClient: AxiosInstance;
   private cookie = "";
   private quality = "exhigh";
   private readonly baseUrl: string;
@@ -135,6 +162,10 @@ export class NeteaseProvider implements MusicProvider {
     this.baseUrl = baseUrl;
     this.api = axios.create({
       baseURL: baseUrl,
+      timeout: 10000,
+    });
+    this.clientlogClient = axios.create({
+      baseURL: "https://clientlog.music.163.com",
       timeout: 10000,
     });
   }
@@ -485,5 +516,105 @@ export class NeteaseProvider implements MusicProvider {
       params: { op: "add", pid: playlistId, tracks: songId, ...params },
     });
     return res.data?.body?.code === 200 || res.data?.code === 200;
+  }
+
+  async scrobble(songId: string, timeSec: number, cookieOverride?: string): Promise<boolean> {
+    try {
+      const rawCookie = cookieOverride !== undefined ? cookieOverride : this.cookie;
+      const cookieObj = parseNeteaseCookie(rawCookie);
+      const musicU = cookieObj.MUSIC_U;
+      if (!musicU) {
+        return false;
+      }
+
+      const id = String(songId || "");
+      if (!/^\d+$/.test(id)) {
+        return false;
+      }
+
+      const time = Math.max(1, Math.round(timeSec));
+      const now = Date.now();
+      const deviceId = crypto.randomBytes(16).toString("hex");
+
+      const header: Record<string, string> = {
+        osver: "15.5",
+        deviceId,
+        os: "osx",
+        appver: "3.1.10.5100",
+        versioncode: "140",
+        mobilename: "",
+        buildver: String(now).slice(0, 10),
+        resolution: "1920x1080",
+        __csrf: cookieObj.__csrf || "",
+        channel: "netease",
+        requestId: `${now}_${String(Math.floor(Math.random() * 1000)).padStart(4, "0")}`,
+        MUSIC_U: musicU,
+      };
+
+      const cookieHeader = Object.entries(header)
+        .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+        .join("; ");
+
+      const headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        Referer: "https://clientlog.music.163.com",
+        Cookie: cookieHeader,
+      };
+
+      const base = {
+        id,
+        type: "song",
+        mainsite: "1",
+        mainsiteWeb: "1",
+        content: "id=0",
+      };
+
+      // 1) startplay: 写入「最近播放」
+      const startplayData = {
+        logs: JSON.stringify([{ action: "startplay", json: base }]),
+        e_r: false,
+        header,
+      };
+      const startEncrypted = encryptNeteaseEapi("/api/feedback/weblog", startplayData);
+      const startRes = await this.clientlogClient.post(
+        "/eapi/feedback/weblog",
+        new URLSearchParams({ params: startEncrypted }).toString(),
+        { headers },
+      );
+
+      // 2) play: 累计播放时长与「听歌排行」
+      const playData = {
+        logs: JSON.stringify([
+          {
+            action: "play",
+            json: {
+              ...base,
+              download: 0,
+              end: "playend",
+              sourceId: "0",
+              time,
+              wifi: 0,
+              source: "list",
+            },
+          },
+        ]),
+        e_r: false,
+        header,
+      };
+      const playEncrypted = encryptNeteaseEapi("/api/feedback/weblog", playData);
+      const playRes = await this.clientlogClient.post(
+        "/eapi/feedback/weblog",
+        new URLSearchParams({ params: playEncrypted }).toString(),
+        { headers },
+      );
+
+      const startOk = startRes.data?.code === 200 || startRes.status === 200;
+      const playOk = playRes.data?.code === 200 || playRes.status === 200;
+      return Boolean(startOk && playOk);
+    } catch {
+      return false;
+    }
   }
 }
