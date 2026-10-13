@@ -73,9 +73,22 @@ export function buildAnalyzeFfmpegArgs(
   maxAnalyzeSeconds: number = DEFAULT_MAX_ANALYZE_SECONDS,
 ): string[] {
   const args: string[] = [];
-  const isHttp = /^https?:\/\//i.test(url);
+  let httpHostname: string | null = null;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      httpHostname = parsed.hostname.toLowerCase().replace(/\.$/, "");
+    }
+  } catch {
+    // Malformed URLs
+  }
+  const isHttp = httpHostname !== null;
+  const isBilibili = httpHostname !== null &&
+    ["bilivideo.com", "bilivideo.cn", "bilibili.com", "szbdyd.com", "mountaintoys.cn"].some(
+      domain => httpHostname === domain || httpHostname.endsWith(`.${domain}`),
+    );
 
-  if (isHttp && (url.includes("bilivideo") || url.includes("bilibili"))) {
+  if (isBilibili) {
     args.push(
       "-headers",
       `Referer: https://www.bilibili.com\r\nUser-Agent: ${BROWSER_UA}\r\n`,

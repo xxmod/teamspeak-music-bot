@@ -169,8 +169,15 @@ describe("pickStableAudioUrl (#161 long streams dying mid-play)", () => {
   const upos = "https://upos-sz-mirrorcos.bilivideo.com/upgcxcode/1/2/3/3-1-30280.m4s?deadline=1";
   const upos2 = "https://upos-sz-mirror08c.bilivideo.com/upgcxcode/1/2/3/3-1-30280.m4s?deadline=1";
 
+  const mountaintoys = "https://b-baaac591actrtu6cut7jmqpbv3zc.edge.mountaintoys.cn:4483/upgcxcode/1/2/3/3-1-30280.m4s?os=mcdn&mcdnid=50061580";
+
   it("prefers an upos/cos mirror over a PCDN baseUrl", () => {
     expect(pickStableAudioUrl({ baseUrl: pcdn, backupUrl: [szbdyd, upos] })).toBe(upos);
+  });
+
+  it("prefers an upos/cos mirror over a mountaintoys edge or mcdn PCDN baseUrl", () => {
+    expect(pickStableAudioUrl({ baseUrl: mountaintoys, backupUrl: [upos] })).toBe(upos);
+    expect(pickStableAudioUrl({ baseUrl: "https://example.com/audio.m4s?os=mcdn", backupUrl: [upos] })).toBe(upos);
   });
 
   it("keeps the baseUrl when it is already a stable host", () => {
@@ -183,6 +190,7 @@ describe("pickStableAudioUrl (#161 long streams dying mid-play)", () => {
 
   it("falls back to the baseUrl when every candidate is PCDN", () => {
     expect(pickStableAudioUrl({ baseUrl: pcdn, backupUrl: [szbdyd] })).toBe(pcdn);
+    expect(pickStableAudioUrl({ baseUrl: mountaintoys, backupUrl: [szbdyd] })).toBe(mountaintoys);
   });
 
   it("returns undefined when there is no url at all", () => {

@@ -123,6 +123,13 @@ describe("buildAnalyzeFfmpegArgs", () => {
     expect(headers).toContain("Referer: https://www.bilibili.com");
   });
 
+  it("adds bilibili headers for mountaintoys.cn PCDN URLs", () => {
+    const args = buildAnalyzeFfmpegArgs("https://b-baaac591actrtu6cut7jmqpbv3zc.edge.mountaintoys.cn:4483/upgcxcode/audio.m4s");
+    expect(args).toContain("-headers");
+    const headers = args[args.indexOf("-headers") + 1];
+    expect(headers).toContain("Referer: https://www.bilibili.com");
+  });
+
   it("adds netease headers for netease URLs", () => {
     const args = buildAnalyzeFfmpegArgs("https://m701.music.126.net/audio.mp3");
     expect(args).toContain("-headers");

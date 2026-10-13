@@ -48,7 +48,7 @@ export interface BiliVideoPartsResult {
  * sessions get cut mid-file, which kills long streams partway (#89, #161),
  * and a reconnect to the same host rarely recovers.
  */
-const BILI_PCDN_HOST = /\.mcdn\.bilivideo\.cn$|\.szbdyd\.com$/i;
+const BILI_PCDN_HOST = /\.mcdn\.bilivideo\.cn$|\.szbdyd\.com$|\.mountaintoys\.cn$/i;
 
 /**
  * Pick the audio URL least likely to die mid-stream: the first upos/cos
@@ -66,7 +66,10 @@ export function pickStableAudioUrl(stream: {
   );
   const stable = candidates.find((u) => {
     try {
-      return !BILI_PCDN_HOST.test(new URL(u).hostname);
+      const parsed = new URL(u);
+      if (BILI_PCDN_HOST.test(parsed.hostname)) return false;
+      if (parsed.searchParams.get("os") === "mcdn" || parsed.searchParams.has("mcdnid")) return false;
+      return true;
     } catch {
       return false;
     }
