@@ -79,11 +79,8 @@
       <div v-if="uploadMessage" class="upload-message" :class="uploadMessageType">{{ uploadMessage }}</div>
     </div>
 
-    <div v-if="loading" class="loading">搜索中...</div>
-
-    <template v-else-if="allSongs.length || allAlbums.length || allPlaylists.length || allArtists.length">
-      <!-- Only enabled sources are offered (enabledProviders gate); Jellyfin
-           (opt-in) comes first when enabled. -->
+    <!-- 用户搜索后，始终展示音源栏以便随时切换音源 -->
+    <template v-if="searched">
       <div class="source-bar">
         <button
           v-if="sourceEnabled('jellyfin')"
@@ -116,12 +113,16 @@
           @click="selectedSource = 'kugou'"
         >酷狗</button>
         <button
-          v-if="hasLocalSongs"
+          v-if="localAudioEnabled"
           class="source-btn"
           :class="{ active: selectedSource === 'local' }"
           @click="selectedSource = 'local'"
         >本地</button>
       </div>
+
+      <div v-if="loading" class="loading">搜索中...</div>
+
+      <template v-else-if="hasCurrentResults">
 
       <!-- Artist row: inline above the tabs, Apple Music style. Only netease/qq
            model artists, so the other sources have nothing to show here. -->
@@ -235,9 +236,12 @@
           {{ currentLoadingMore ? '加载中...' : '加载更多' }}
         </button>
       </div>
+      </template>
+
+      <div v-else class="empty">未找到相关结果</div>
     </template>
 
-    <div v-else-if="!searched" class="search-intro">
+    <div v-else class="search-intro">
       <template v-if="historyEntries.length">
         <div class="history-tags-title">最近搜索</div>
         <div class="history-tags">
@@ -254,8 +258,6 @@
       </template>
       <div v-else class="search-intro-text">搜索歌曲、歌手或专辑，歌手支持专属页面</div>
     </div>
-
-    <div v-else class="empty">未找到相关结果</div>
   </div>
 </template>
 
@@ -327,6 +329,7 @@ const uploadMessage = ref('');
 const uploadMessageType = ref<'info' | 'error'>('info');
 const fileInput = ref<HTMLInputElement | null>(null);
 const localAudioEnabled = ref(true);
+const searchedSources = ref<Set<string>>(new Set());
 
 const filteredSongs = computed(() =>
   allSongs.value.filter((s) => s.platform === selectedSource.value)
@@ -342,6 +345,10 @@ const filteredPlaylists = computed(() =>
 
 const filteredArtists = computed(() =>
   allArtists.value.filter((a) => a.platform === selectedSource.value)
+);
+
+const hasCurrentResults = computed(() =>
+  Boolean(filteredSongs.value.length || filteredAlbums.value.length || filteredPlaylists.value.length || filteredArtists.value.length)
 );
 
 const hasLocalSongs = computed(() => localAudioEnabled.value && allSongs.value.some((s) => s.platform === 'local'));
@@ -442,10 +449,13 @@ watch(selectedSource, (src) => {
   try { localStorage.setItem(SOURCE_STORAGE_KEY, src); } catch { /* ignore */ }
 });
 
-// B站 / 本地上传没有专辑和歌单页签，切换时强制回到单曲。
-watch(selectedSource, (src) => {
+// B站 / 本地上传没有专辑和歌单页签，切换时强制回到单曲；若当前音源未搜索过则按需请求
+watch(selectedSource, async (src) => {
   if ((src === 'bilibili' || src === 'local' || src === 'kugou') && activeTab.value !== 'songs') {
     activeTab.value = 'songs';
+  }
+  if (searched.value && query.value.trim() && !searchedSources.value.has(src)) {
+    await fetchSource(src);
   }
 });
 
@@ -468,28 +478,54 @@ async function toggleFavPlaylist(pl: { id: string; platform: string; name: strin
   }
 }
 
+async function fetchSource(source: SearchSource) {
+  const q = query.value.trim();
+  if (!q) return;
+  loading.value = true;
+  try {
+    const res = await axios.get('/api/music/search', {
+      params: { q, platform: source, limit: PAGE_SIZE, offset: 0 },
+    });
+    if (query.value.trim() !== q) return;
+
+    const incomingSongs = (res.data.songs ?? []) as Song[];
+    const incomingAlbums = (res.data.albums ?? []) as Album[];
+    const incomingPlaylists = (res.data.playlists ?? []) as Playlist[];
+    const incomingArtists = (res.data.artists ?? []) as Artist[];
+
+    allSongs.value = mergeDedup(allSongs.value, incomingSongs);
+    allAlbums.value = mergeDedup(allAlbums.value, incomingAlbums);
+    allPlaylists.value = mergeDedup(allPlaylists.value, incomingPlaylists);
+    allArtists.value = mergeDedup(allArtists.value, incomingArtists);
+
+    setHasMore('songs', source, incomingSongs.length);
+    setHasMore('albums', source, incomingAlbums.length);
+    setHasMore('playlists', source, incomingPlaylists.length);
+
+    searchedSources.value.add(source);
+  } catch {
+    if (query.value.trim() !== q) return;
+    searchedSources.value.add(source);
+  } finally {
+    if (query.value.trim() === q) {
+      loading.value = false;
+    }
+  }
+}
+
 async function doSearch() {
   if (!query.value.trim()) return;
   recordHistory();
-  loading.value = true;
   searched.value = true;
   activeTab.value = 'songs';
   resetPagination();
+  allSongs.value = [];
+  allAlbums.value = [];
+  allPlaylists.value = [];
+  allArtists.value = [];
+  searchedSources.value.clear();
   router.replace({ query: { q: query.value } });
-  try {
-    const res = await axios.get('/api/music/search/all', { params: { q: query.value } });
-    allSongs.value = res.data.songs ?? [];
-    allAlbums.value = res.data.albums ?? [];
-    allPlaylists.value = res.data.playlists ?? [];
-    allArtists.value = res.data.artists ?? [];
-    recordInitialHasMore(allSongs.value, 'songs');
-    recordInitialHasMore(allAlbums.value, 'albums');
-    recordInitialHasMore(allPlaylists.value, 'playlists');
-  } catch {
-    allSongs.value = []; allAlbums.value = []; allPlaylists.value = []; allArtists.value = [];
-  } finally {
-    loading.value = false;
-  }
+  await fetchSource(selectedSource.value);
 }
 
 // ---- 搜索历史 ----
