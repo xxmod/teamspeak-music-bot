@@ -8,6 +8,7 @@ type CookiePlatform = "netease" | "qq" | "bilibili" | "kugou" | "jellyfin";
 export interface CookieStore {
   save(platform: CookiePlatform, cookie: string): void;
   load(platform: CookiePlatform): string;
+  delete(platform: CookiePlatform): void;
 }
 
 export function createCookieStore(cookieDir: string): CookieStore {
@@ -33,6 +34,17 @@ export function createCookieStore(cookieDir: string): CookieStore {
         return data.cookie ?? "";
       } catch {
         return "";
+      }
+    },
+
+    delete(platform: CookiePlatform): void {
+      const filePath = path.join(cookieDir, `${platform}.json`);
+      if (fs.existsSync(filePath)) {
+        try {
+          fs.unlinkSync(filePath);
+        } catch {
+          // ignore
+        }
       }
     },
   };

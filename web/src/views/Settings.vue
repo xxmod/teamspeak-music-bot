@@ -310,6 +310,16 @@
             <Icon icon="mdi:cookie" />
             Cookie登录
           </button>
+          <button
+            v-if="neteaseAuth.loggedIn"
+            class="login-btn btn-clear"
+            :disabled="clearingAccount['netease']"
+            @click="clearAccountCookie('netease')"
+            title="清空此平台的Cookie配置"
+          >
+            <Icon icon="mdi:delete-outline" />
+            {{ clearingAccount['netease'] ? '清空中...' : '清空配置' }}
+          </button>
         </div>
 
         <!-- QR Code -->
@@ -346,7 +356,17 @@
             placeholder="粘贴网易云音乐Cookie..."
             rows="3"
           />
-          <button class="btn-primary btn-save" @click="saveCookie('netease')">保存Cookie</button>
+          <div class="cookie-actions">
+            <button
+              v-if="neteaseAuth.loggedIn"
+              class="btn-secondary btn-clear-cookie"
+              :disabled="clearingAccount['netease']"
+              @click="clearAccountCookie('netease')"
+            >
+              清空配置
+            </button>
+            <button class="btn-primary btn-save" @click="saveCookie('netease')">保存Cookie</button>
+          </div>
         </div>
       </div>
 
@@ -379,6 +399,16 @@
           >
             <Icon icon="mdi:cookie" />
             Cookie登录
+          </button>
+          <button
+            v-if="qqAuth.loggedIn"
+            class="login-btn btn-clear"
+            :disabled="clearingAccount['qq']"
+            @click="clearAccountCookie('qq')"
+            title="清空此平台的Cookie配置"
+          >
+            <Icon icon="mdi:delete-outline" />
+            {{ clearingAccount['qq'] ? '清空中...' : '清空配置' }}
           </button>
         </div>
 
@@ -416,7 +446,17 @@
             placeholder="粘贴QQ音乐Cookie..."
             rows="3"
           />
-          <button class="btn-primary btn-save" @click="saveCookie('qq')">保存Cookie</button>
+          <div class="cookie-actions">
+            <button
+              v-if="qqAuth.loggedIn"
+              class="btn-secondary btn-clear-cookie"
+              :disabled="clearingAccount['qq']"
+              @click="clearAccountCookie('qq')"
+            >
+              清空配置
+            </button>
+            <button class="btn-primary btn-save" @click="saveCookie('qq')">保存Cookie</button>
+          </div>
         </div>
       </div>
       <!-- BiliBili -->
@@ -448,6 +488,16 @@
           >
             <Icon icon="mdi:cookie" />
             Cookie登录
+          </button>
+          <button
+            v-if="bilibiliAuth.loggedIn"
+            class="login-btn btn-clear"
+            :disabled="clearingAccount['bilibili']"
+            @click="clearAccountCookie('bilibili')"
+            title="清空此平台的Cookie配置"
+          >
+            <Icon icon="mdi:delete-outline" />
+            {{ clearingAccount['bilibili'] ? '清空中...' : '清空配置' }}
           </button>
         </div>
 
@@ -485,7 +535,17 @@
             placeholder="粘贴哔哩哔哩Cookie..."
             rows="3"
           />
-          <button class="btn-primary btn-save" @click="saveCookie('bilibili')">保存Cookie</button>
+          <div class="cookie-actions">
+            <button
+              v-if="bilibiliAuth.loggedIn"
+              class="btn-secondary btn-clear-cookie"
+              :disabled="clearingAccount['bilibili']"
+              @click="clearAccountCookie('bilibili')"
+            >
+              清空配置
+            </button>
+            <button class="btn-primary btn-save" @click="saveCookie('bilibili')">保存Cookie</button>
+          </div>
         </div>
       </div>
 
@@ -518,6 +578,16 @@
           >
             <Icon icon="mdi:cookie" />
             Cookie登录
+          </button>
+          <button
+            v-if="kugouAuth.loggedIn"
+            class="login-btn btn-clear"
+            :disabled="clearingAccount['kugou']"
+            @click="clearAccountCookie('kugou')"
+            title="清空此平台的Cookie配置"
+          >
+            <Icon icon="mdi:delete-outline" />
+            {{ clearingAccount['kugou'] ? '清空中...' : '清空配置' }}
           </button>
         </div>
 
@@ -555,7 +625,17 @@
             placeholder="粘贴酷狗Cookie (token=...; userid=...)..."
             rows="3"
           />
-          <button class="btn-primary btn-save" @click="saveCookie('kugou')">保存Cookie</button>
+          <div class="cookie-actions">
+            <button
+              v-if="kugouAuth.loggedIn"
+              class="btn-secondary btn-clear-cookie"
+              :disabled="clearingAccount['kugou']"
+              @click="clearAccountCookie('kugou')"
+            >
+              清空配置
+            </button>
+            <button class="btn-primary btn-save" @click="saveCookie('kugou')">保存Cookie</button>
+          </div>
         </div>
       </div>
     </section>
@@ -1576,10 +1656,26 @@ async function checkAuthStatus() {
     axios.get('/api/auth/status', { params: { platform: 'kugou' } }),
     axios.get('/api/auth/status', { params: { platform: 'jellyfin' } }),
   ]);
-  if (nRes.status === 'fulfilled') Object.assign(neteaseAuth, nRes.value.data);
-  if (qRes.status === 'fulfilled') Object.assign(qqAuth, qRes.value.data);
-  if (bRes.status === 'fulfilled') Object.assign(bilibiliAuth, bRes.value.data);
-  if (kRes.status === 'fulfilled') Object.assign(kugouAuth, kRes.value.data);
+  if (nRes.status === 'fulfilled') {
+    neteaseAuth.loggedIn = Boolean(nRes.value.data?.loggedIn);
+    neteaseAuth.nickname = nRes.value.data?.nickname ?? '';
+    neteaseAuth.avatarUrl = nRes.value.data?.avatarUrl ?? '';
+  }
+  if (qRes.status === 'fulfilled') {
+    qqAuth.loggedIn = Boolean(qRes.value.data?.loggedIn);
+    qqAuth.nickname = qRes.value.data?.nickname ?? '';
+    qqAuth.avatarUrl = qRes.value.data?.avatarUrl ?? '';
+  }
+  if (bRes.status === 'fulfilled') {
+    bilibiliAuth.loggedIn = Boolean(bRes.value.data?.loggedIn);
+    bilibiliAuth.nickname = bRes.value.data?.nickname ?? '';
+    bilibiliAuth.avatarUrl = bRes.value.data?.avatarUrl ?? '';
+  }
+  if (kRes.status === 'fulfilled') {
+    kugouAuth.loggedIn = Boolean(kRes.value.data?.loggedIn);
+    kugouAuth.nickname = kRes.value.data?.nickname ?? '';
+    kugouAuth.avatarUrl = kRes.value.data?.avatarUrl ?? '';
+  }
   if (jRes.status === 'fulfilled') {
     jellyfinAuth.loggedIn = Boolean(jRes.value.data?.loggedIn);
     jellyfinAuth.nickname = jRes.value.data?.nickname ?? '';
@@ -1752,16 +1848,77 @@ async function toggleBot(botId: string, connected: boolean) {
   }
 }
 
+const clearingAccount = reactive<Record<string, boolean>>({});
+
+async function clearAccountCookie(platform: string) {
+  const name = PROVIDER_LABELS[platform] || platform;
+  if (!window.confirm(`确定要清空 ${name} 的Cookie配置吗？清空后将恢复为未登录状态。`)) {
+    return;
+  }
+  clearingAccount[platform] = true;
+  try {
+    await axios.delete(`/api/auth/cookie/${platform}`);
+    if (platform === 'netease') {
+      neteaseCookie.value = '';
+      neteaseLoginMode.value = null;
+      neteaseAuth.loggedIn = false;
+      neteaseAuth.nickname = '';
+      neteaseAuth.avatarUrl = '';
+    } else if (platform === 'qq') {
+      qqCookie.value = '';
+      qqLoginMode.value = null;
+      qqAuth.loggedIn = false;
+      qqAuth.nickname = '';
+      qqAuth.avatarUrl = '';
+    } else if (platform === 'bilibili') {
+      bilibiliCookie.value = '';
+      bilibiliLoginMode.value = null;
+      bilibiliAuth.loggedIn = false;
+      bilibiliAuth.nickname = '';
+      bilibiliAuth.avatarUrl = '';
+    } else if (platform === 'kugou') {
+      kugouCookie.value = '';
+      kugouLoginMode.value = null;
+      kugouAuth.loggedIn = false;
+      kugouAuth.nickname = '';
+      kugouAuth.avatarUrl = '';
+    }
+    await checkAuthStatus();
+    store.invalidateHomeCache();
+    store.fetchHomeData();
+    store.notify(`${name} Cookie配置已清空`, 'info');
+  } catch (err: any) {
+    store.notify(err?.response?.data?.error || '清空配置失败', 'error');
+  } finally {
+    clearingAccount[platform] = false;
+  }
+}
+
 async function saveCookie(platform: string) {
   const cookie = platform === 'bilibili' ? bilibiliCookie.value
     : platform === 'kugou' ? kugouCookie.value
     : platform === 'netease' ? neteaseCookie.value : qqCookie.value;
-  if (!cookie) return;
+  if (!cookie || !cookie.trim()) {
+    const isLogged = platform === 'bilibili' ? bilibiliAuth.loggedIn
+      : platform === 'kugou' ? kugouAuth.loggedIn
+      : platform === 'netease' ? neteaseAuth.loggedIn : qqAuth.loggedIn;
+    if (isLogged) {
+      await clearAccountCookie(platform);
+    }
+    return;
+  }
   try {
-    await axios.post('/api/auth/cookie', { platform, cookie });
+    await axios.post('/api/auth/cookie', { platform, cookie: cookie.trim() });
+    store.notify('Cookie保存成功', 'info');
+    if (platform === 'netease') neteaseLoginMode.value = null;
+    else if (platform === 'qq') qqLoginMode.value = null;
+    else if (platform === 'bilibili') bilibiliLoginMode.value = null;
+    else if (platform === 'kugou') kugouLoginMode.value = null;
     await checkAuthStatus();
-  } catch {
-    // Ignore
+    store.invalidateHomeCache();
+    store.fetchHomeData();
+  } catch (err: any) {
+    store.notify(err?.response?.data?.error || '保存Cookie失败', 'error');
   }
 }
 
@@ -2784,6 +2941,15 @@ onUnmounted(() => {
     color: var(--color-primary);
   }
   &:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  &.btn-clear {
+    margin-left: auto;
+    color: var(--color-danger, #f44336);
+    &:hover {
+      border-color: var(--color-danger, #f44336);
+      background: rgba(244, 67, 54, 0.1);
+    }
+  }
 }
 
 // QR code
@@ -2844,6 +3010,20 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.cookie-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.btn-clear-cookie {
+  color: var(--color-danger, #f44336);
+  &:hover {
+    border-color: var(--color-danger, #f44336);
+    background: rgba(244, 67, 54, 0.1);
+  }
 }
 
 .btn-save {

@@ -616,10 +616,12 @@ export function createPlayerRouter(
       // clear branch — do NOT also call it here, or it would delete retained
       // local uploads in keep-queue mode.
       const body = await bot.runExclusive(async () => {
-        const ok = await bot.playSingleSong({ ...song }, requesterName(req), requesterId(req));
+        const songToPlay = { ...song };
+        const ok = await bot.playSingleSong(songToPlay, requesterName(req), requesterId(req));
+        const currentName = bot.getQueueManager().current()?.name || songToPlay.name || song.name || 'Unknown';
         return ok
-          ? { ok: true, message: `正在播放：${song.name || 'Unknown'} - ${song.artist || 'Unknown'}` }
-          : { ok: false, message: `无法播放「${song.name || song.id}」（区域/版权限制）` };
+          ? { ok: true, message: `正在播放：${currentName} - ${song.artist || 'Unknown'}` }
+          : { ok: false, message: `无法播放「${currentName}」（区域/版权限制）` };
       });
       res.json(body);
     } catch (err) {
@@ -660,10 +662,11 @@ export function createPlayerRouter(
           queue.playAt(insertedAt);
           bot.getPlayer().resetFailures();
           const ok = await bot.resolveAndPlay(queue.current()!);
+          const currentName = queue.current()?.name || song.name || 'Unknown';
           if (!ok) {
-            return { ok: false, message: `无法播放「${song.name || song.id}」（区域/版权限制）` };
+            return { ok: false, message: `无法播放「${currentName}」（区域/版权限制）` };
           }
-          return { ok: true, message: `正在播放：${song.name || 'Unknown'} - ${song.artist || 'Unknown'}` };
+          return { ok: true, message: `正在播放：${currentName} - ${song.artist || 'Unknown'}` };
         }
 
         bot.preAnalyzeNextTrack?.();
@@ -700,11 +703,12 @@ export function createPlayerRouter(
         queue.playAt(insertedAt);
         bot.getPlayer().resetFailures();
         const ok = await bot.resolveAndPlay(queue.current()!);
+        const currentName = queue.current()?.name || song.name || 'Unknown';
         if (!ok) {
-          return { ok: false, message: `无法播放「${song.name || song.id}」（区域/版权限制）` };
+          return { ok: false, message: `无法播放「${currentName}」（区域/版权限制）` };
         }
         bot.preAnalyzeNextTrack?.();
-        return { ok: true, message: `正在播放：${song.name || "Unknown"} - ${song.artist || "Unknown"}` };
+        return { ok: true, message: `正在播放：${currentName} - ${song.artist || "Unknown"}` };
       });
       res.json(body);
     } catch (err) {
@@ -736,7 +740,8 @@ export function createPlayerRouter(
           queue.playAt(queue.size() - 1);
           bot.getPlayer().resetFailures();
           await bot.resolveAndPlay(queue.current()!);
-          return { message: `Now playing: ${song.name || 'Unknown'} - ${song.artist || 'Unknown'}` };
+          const currentName = queue.current()?.name || song.name || 'Unknown';
+          return { message: `Now playing: ${currentName} - ${song.artist || 'Unknown'}` };
         }
 
         bot.preAnalyzeNextTrack?.();

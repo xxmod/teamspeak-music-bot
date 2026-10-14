@@ -1175,6 +1175,13 @@ export class BotInstance extends EventEmitter {
       song.url = result.url;
       // 试听片段用试听时长（让 player nearEnd 正确触发自动切歌）；完整曲回退 song.duration
       this.effectiveDuration = result.trialDuration ?? song.duration;
+      if (result.trialDuration) {
+        if (!song.name.startsWith("（VIP试听）")) {
+          song.name = `（VIP试听）${song.name}`;
+        }
+      } else if (song.name.startsWith("（VIP试听）")) {
+        song.name = song.name.slice("（VIP试听）".length);
+      }
 
       this.finishCurrentPlayingTrack?.(false);
       this.currentPlayingTrack = { song, reported: false };
@@ -1491,7 +1498,8 @@ export class BotInstance extends EventEmitter {
     const song0 = song!;
     const ok = await this.playSingleSong(song0, requesterName, requesterId);
     if (!ok) return `Cannot play: ${song0.name}`;
-    return `Now playing: ${song0.name} - ${song0.artist}`;
+    const current = this.queue.current();
+    return `Now playing: ${current?.name ?? song0.name} - ${current?.artist ?? song0.artist}`;
   }
 
   /**
@@ -1520,7 +1528,9 @@ export class BotInstance extends EventEmitter {
       this.queue.playAt(insertedAt);
       this.player.resetFailures();
       // No sweep here: the queue is kept, so no local uploads were released.
-      return this.resolveAndPlay(this.queue.current()!);
+      const ok = await this.resolveAndPlay(this.queue.current()!);
+      song.name = this.queue.current()?.name ?? song.name;
+      return ok;
     }
     // Legacy replace behavior (default).
     const previous = this.queue.current();
@@ -1540,6 +1550,7 @@ export class BotInstance extends EventEmitter {
     // longer referenced (and get deleted), but the song — if it is the same
     // local upload that was already playing — stays referenced and is preserved.
     this.sweepLocalAudio("replaced");
+    song.name = this.queue.current()?.name ?? song.name;
     return ok;
   }
 
@@ -1597,7 +1608,8 @@ export class BotInstance extends EventEmitter {
       this.player.resetFailures();
       await this.resolveAndPlay(this.queue.current()!);
       this.emit("stateChange");
-      return `Now playing: ${s.name} - ${s.artist}`;
+      const current = this.queue.current();
+      return `Now playing: ${current?.name ?? s.name} - ${current?.artist ?? s.artist}`;
     }
 
     this.emit("stateChange");
@@ -1628,8 +1640,9 @@ export class BotInstance extends EventEmitter {
       this.player.resetFailures();
       const ok = await this.resolveAndPlay(this.queue.current()!);
       this.emit("stateChange");
-      if (!ok) return `Cannot play: ${s.name}`;
-      return `Now playing: ${s.name} - ${s.artist}`;
+      const current = this.queue.current();
+      if (!ok) return `Cannot play: ${current?.name ?? s.name}`;
+      return `Now playing: ${current?.name ?? s.name} - ${current?.artist ?? s.artist}`;
     }
 
     this.emit("stateChange");

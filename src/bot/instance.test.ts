@@ -2322,3 +2322,92 @@ describe("BotInstance - Playback history reporting (NetEase & Bilibili scrobble)
     expect(neteaseScrobble).not.toHaveBeenCalled();
   });
 });
+
+describe("BotInstance.resolveAndPlay — VIP trial prefix handling", () => {
+  it("prefixes song name with （VIP试听） and uses trialDuration when trialDuration is present", async () => {
+    const controller = makeController();
+    const player = makePlayer();
+    const ctx = makeResolveCtx({ controller, player, url: "https://music.test/trial.mp3" });
+    ctx.getProviderFor = vi.fn(() => ({
+      getSongUrl: async () => ({ url: "https://music.test/trial.mp3", trialDuration: 30 }),
+    }));
+
+    const song = {
+      id: "netease-vip-song",
+      name: "晴天",
+      artist: "周杰伦",
+      album: "叶惠美",
+      platform: "netease",
+      duration: 269,
+      coverUrl: "https://img.test/cover.jpg",
+      url: "",
+    };
+
+    const ok = await resolveAndPlay.call(ctx, song);
+
+    expect(ok).toBe(true);
+    expect(song.name).toBe("（VIP试听）晴天");
+    expect(ctx.effectiveDuration).toBe(30);
+    expect(player.play).toHaveBeenCalledWith("https://music.test/trial.mp3", 0, 30);
+    expect(ctx.database.addPlayHistory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        songName: "（VIP试听）晴天",
+      }),
+    );
+    expect(ctx.syncProfileToSong).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "（VIP试听）晴天",
+      }),
+    );
+  });
+
+  it("does not duplicate （VIP试听） prefix if song name already has it", async () => {
+    const controller = makeController();
+    const player = makePlayer();
+    const ctx = makeResolveCtx({ controller, player, url: "https://music.test/trial.mp3" });
+    ctx.getProviderFor = vi.fn(() => ({
+      getSongUrl: async () => ({ url: "https://music.test/trial.mp3", trialDuration: 30 }),
+    }));
+
+    const song = {
+      id: "netease-vip-song",
+      name: "（VIP试听）晴天",
+      artist: "周杰伦",
+      platform: "netease",
+      duration: 269,
+      url: "",
+    };
+
+    const ok = await resolveAndPlay.call(ctx, song);
+
+    expect(ok).toBe(true);
+    expect(song.name).toBe("（VIP试听）晴天");
+    expect(ctx.effectiveDuration).toBe(30);
+  });
+
+  it("removes （VIP试听） prefix and restores song.duration when full playback URL is resolved", async () => {
+    const controller = makeController();
+    const player = makePlayer();
+    const ctx = makeResolveCtx({ controller, player, url: "https://music.test/full.mp3" });
+    ctx.getProviderFor = vi.fn(() => ({
+      getSongUrl: async () => ({ url: "https://music.test/full.mp3" }),
+    }));
+
+    const song = {
+      id: "netease-full-song",
+      name: "（VIP试听）晴天",
+      artist: "周杰伦",
+      platform: "netease",
+      duration: 269,
+      url: "",
+    };
+
+    const ok = await resolveAndPlay.call(ctx, song);
+
+    expect(ok).toBe(true);
+    expect(song.name).toBe("晴天");
+    expect(ctx.effectiveDuration).toBe(269);
+    expect(player.play).toHaveBeenCalledWith("https://music.test/full.mp3", 0, 269);
+  });
+});
+

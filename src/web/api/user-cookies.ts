@@ -74,7 +74,9 @@ export function createUserCookiesRouter(
       return;
     }
     if (!cookie || typeof cookie !== "string" || !cookie.trim()) {
-      res.status(400).json({ error: "cookie is required" });
+      const deleted = db.deleteUserCookie(userId, platform);
+      logger.info({ userId, platform, deleted }, "User platform cookie cleared via empty POST");
+      res.json({ success: true, deleted, cleared: true });
       return;
     }
 

@@ -170,10 +170,6 @@ export function createAuthRouter(
 
   router.post("/cookie", requirePermission("platform.auth"), (req, res) => {
     const { platform, cookie } = req.body;
-    if (!cookie) {
-      res.status(400).json({ error: "cookie is required" });
-      return;
-    }
     // YouTube has no cookie concept — reject instead of falling through and
     // clobbering the NetEase cookie entry.
     if (platform === "youtube") {
@@ -191,14 +187,59 @@ export function createAuthRouter(
       return;
     }
     const provider = getProvider(platform);
-    provider.setCookie(cookie);
+    const plat = platform === "bilibili" ? "bilibili" as const
+      : platform === "kugou" ? "kugou" as const
+      : platform === "qq" ? "qq" as const : "netease" as const;
+
+    if (!cookie || (typeof cookie === "string" && !cookie.trim())) {
+      provider.setCookie("");
+      if (cookieStore) {
+        cookieStore.delete(plat);
+      }
+      logger.info({ platform: plat }, "Platform cookie cleared");
+      res.json({ success: true, cleared: true });
+      return;
+    }
+
+    let raw = typeof cookie === "string" ? cookie.trim() : "";
+    if (/^cookie:\s*/i.test(raw)) {
+      raw = raw.replace(/^cookie:\s*/i, "").trim();
+    }
+    provider.setCookie(raw);
+    if (cookieStore) {
+      cookieStore.save(plat, raw);
+    }
+    res.json({ success: true });
+  });
+
+  function handleClearCookie(platform: string | undefined, res: any) {
+    if (!platform) {
+      res.status(400).json({ error: "platform is required" });
+      return;
+    }
+    if (platform === "youtube" || platform === "jellyfin") {
+      res.status(400).json({ error: `Platform ${platform} does not support cookie auth` });
+      return;
+    }
+    const provider = getProvider(platform);
+    provider.setCookie("");
     const plat = platform === "bilibili" ? "bilibili" as const
       : platform === "kugou" ? "kugou" as const
       : platform === "qq" ? "qq" as const : "netease" as const;
     if (cookieStore) {
-      cookieStore.save(plat, cookie);
+      cookieStore.delete(plat);
     }
-    res.json({ success: true });
+    logger.info({ platform: plat }, "Platform cookie cleared");
+    res.json({ success: true, cleared: true });
+  }
+
+  router.delete("/cookie", requirePermission("platform.auth"), (req, res) => {
+    const platform = (req.body?.platform || req.query?.platform) as string | undefined;
+    handleClearCookie(platform, res);
+  });
+
+  router.delete("/cookie/:platform", requirePermission("platform.auth"), (req, res) => {
+    handleClearCookie(req.params.platform, res);
   });
 
   return router;
